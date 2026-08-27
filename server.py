@@ -563,10 +563,10 @@ def main():
     local_ip = get_local_ip()
 
     print("=" * 60)
-    print("  DISPLAY DATA EXTRACTOR — CAMERA ADJUSTMENT SERVER")
+    print(f"  >>> SERVER IS RUNNING ON PORT: {port} <<<")
     print("=" * 60)
-    print(f"  Access from this Raspberry Pi:   http://localhost:{port}")
-    print(f"  Access from other PC / Phone:     http://{local_ip}:{port}")
+    print(f"  Local Access:    http://localhost:{port}")
+    print(f"  Network Access:  http://{local_ip}:{port}")
     print("=" * 60)
     print("  Press Ctrl+C to stop\n", flush=True)
 
