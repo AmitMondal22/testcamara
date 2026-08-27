@@ -1,0 +1,33 @@
+{
+  "interval_seconds": 5,
+  "camera_index": 0,
+  "camera_resolution": [1280, 720],
+  "server_port": 5000,
+  "server_host": "0.0.0.0",
+  "fields": {
+    "uf_volume": {
+      "name": "UF Volume",
+      "aliases": ["UF Volume", "UF Vol", "Volume"]
+    },
+    "uf_time_left": {
+      "name": "UF Time Left",
+      "aliases": ["UF Time Left", "Time Left", "Time"]
+    },
+    "uf_rate": {
+      "name": "UF Rate",
+      "aliases": ["UF Rate", "Rate"]
+    },
+    "kt_v": {
+      "name": "Kt/V",
+      "aliases": ["Kt/V", "Kt V", "Kt/v", "Kt"]
+    },
+    "plasma_na": {
+      "name": "Plasma Na",
+      "aliases": ["Plasma Na", "Plasma", "Na"]
+    },
+    "clearance": {
+      "name": "Clearance",
+      "aliases": ["Clearance", "Clear"]
+    }
+  }
+}

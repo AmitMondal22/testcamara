@@ -1,0 +1,42 @@
+{
+    "uf_volume": {
+        "name": "UF Volume",
+        "type": "number"
+    },
+    "uf_time_left": {
+        "name": "UF Time Left",
+        "type": "number"
+    },
+    "uf_goal": {
+        "name": "UF Goal",
+        "type": "number"
+    },
+    "eff_blood_flow": {
+        "name": "Eff. Blood Flow",
+        "type": "number"
+    },
+    "cum_blood_vol": {
+        "name": "Cum. Blood Vol",
+        "type": "number"
+    },
+    "uf_rate": {
+        "name": "UF Rate",
+        "type": "number"
+    },
+    "kt_v": {
+        "name": "Kt/V",
+        "type": "number"
+    },
+    "plasma_na": {
+        "name": "Plasma Na",
+        "type": "number"
+    },
+    "goal in": {
+        "name": "Goal in",
+        "type": "number"
+    },
+    "clearance": {
+        "name": "Clearance",
+        "type": "number"
+    }
+}
