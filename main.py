@@ -26,6 +26,13 @@ import threading
 import logging
 from datetime import datetime
 
+# Ensure stdout supports UTF-8 on Windows / Linux
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import cv2
 import numpy as np
 from dotenv import load_dotenv
@@ -518,65 +525,40 @@ def run_application():
             time.sleep(interval)
             reading_num += 1
 
-            # Grab snapshot of recent frames from memory buffer
-            frames_to_process = []
+            # Process latest fresh frame from memory buffer
+            latest_frame = None
             with _lock:
-                if _recent_frames:
-                    frames_to_process = [f.copy() for f in _recent_frames]
+                if _latest_frame is not None:
+                    latest_frame = _latest_frame.copy()
+                elif _recent_frames:
+                    latest_frame = _recent_frames[-1].copy()
 
-            if not frames_to_process:
+            if latest_frame is None:
                 continue
 
-            # Multi-frame consensus across buffered frames
-            burst_results = []
-            max_items = 0
+            verified_data, max_items = extract_from_frame(latest_frame, fields_config=fields)
 
-            for f in frames_to_process:
-                data, count = extract_from_frame(f, fields_config=fields)
-                burst_results.append(data)
-                max_items = max(max_items, count)
+            now_iso = datetime.now().isoformat()
 
-            # Cross-frame voting
-            from collections import Counter
-            verified_data = {}
-
-            all_keys = set()
-            for res in burst_results:
-                all_keys.update(res.keys())
-
-            for key in all_keys:
-                candidates = []
-                name = None
-                for res in burst_results:
-                    if key in res:
-                        item = res[key]
-                        candidates.append(item["value"])
-                        name = item.get("name", key)
-
-                if candidates:
-                    val_counts = Counter(candidates)
-                    best_val, best_count = val_counts.most_common(1)[0]
-                    if best_count >= max(2, len(frames_to_process) // 2):
-                        verified_data[key] = {
-                            "name": name or key,
-                            "value": best_val
-                        }
-
-            ts = datetime.now().isoformat()
             with _lock:
                 _latest_data = verified_data
-                _latest_item_count = max_items
-                _latest_timestamp = ts
+                _latest_item_count = len(verified_data)
+                _latest_timestamp = now_iso
 
-            output = {
-                "reading": reading_num,
-                "timestamp": ts,
-                "items_detected": max_items,
-                "data": verified_data,
-            }
-
-            # Print JSON every interval
-            print(json.dumps(output, indent=2, ensure_ascii=False), flush=True)
+            # Zero False-Data Requirement: Only print JSON when readable data is found
+            if verified_data:
+                packet = {
+                    "reading": reading_num,
+                    "timestamp": now_iso,
+                    "items_detected": len(verified_data),
+                    "data": verified_data,
+                }
+                print(json.dumps(packet, indent=2, ensure_ascii=False), flush=True)
+            else:
+                print(
+                    f"[{now_iso}] [ALERT] CAMERA NOT ALIGNED - No readable text detected. Please adjust camera to point at the display.",
+                    flush=True
+                )
 
     finally:
         _running = False
