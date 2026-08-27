@@ -29,7 +29,7 @@ import numpy as np
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, render_template_string
 
-from src.extractor import extract_from_frame, open_camera, load_dataset_file
+from src.extractor import extract_from_frame, extract_verified_packet, open_camera, load_dataset_file
 
 # Load .env file
 ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -161,10 +161,15 @@ def camera_extraction_loop(config):
             _camera_ok = True
             _camera_status_msg = "OK"
 
-        # 3. OCR extraction at interval
+        # 3. Multi-frame verified extraction at interval
         now = time.time()
         if now - last_extract_time >= interval:
-            data, count = extract_from_frame(frame, fields_config=config.get("fields"))
+            data, count = extract_verified_packet(
+                cap,
+                fields_config=config.get("fields"),
+                burst_count=3,
+                agreement_threshold=2
+            )
             with _lock:
                 _latest_data = data
                 _latest_item_count = count
