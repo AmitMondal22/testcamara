@@ -1,5 +1,10 @@
-opencv-python>=4.7.0
-numpy>=1.23.0
-pytesseract>=0.3.10
-flask>=3.0.0
-python-dotenv>=1.0.0
+fastapi
+uvicorn
+jinja2
+websockets
+python-multipart
+opencv-python
+pytesseract
+numpy
+easyocr
+Pillow

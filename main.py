@@ -1,570 +1,245 @@
 """
 main.py
 -------
-Unified Display Data Extractor & Web Server for Raspberry Pi 4.
-
-Runs BOTH simultaneously:
-  1. Continuous interval extraction printing JSON to stdout every N seconds.
-  2. Flask Web Server on Port 5000 (http://localhost:5000 and http://<rpi-ip>:5000)
-     for live camera view, positioning, and real-time dashboard.
+CLI entry point for Webcam Image Data Extractor & Terminal Scraper.
 
 Usage:
-    python main.py                  # Run continuous extraction + Web server on port 5000
-    python main.py --interval 3     # 3-second extraction interval
-    python main.py --port 8080      # Custom web port
-    python main.py --camera 1       # Custom camera index
+    python main.py                              # Interactive menu
+    python main.py --webcam                     # Webcam GUI capture -> scrape & print to terminal
+    python main.py --live                       # Live real-time webcam text scraper
+    python main.py --headless                   # Non-interactive webcam capture
+    python main.py --upload path/to/image.jpg   # Extract image data from existing file
+    python main.py --mode dialysis              # Use specialized dialysis screen parser
+
+Options:
+    --engine {auto,easyocr,tesseract}
+    --mode {general,dialysis}
+    --camera 0
 """
 
-import json
 import os
-import sys
-import time
-import socket
-import signal
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+try:
+    # pyrefly: ignore [missing-import]
+    import torch
+except Exception:
+    pass
+
 import argparse
-import threading
-import logging
+import json
+import sys
+import cv2
 from datetime import datetime
 
-# Ensure stdout supports UTF-8 on Windows / Linux
-if hasattr(sys.stdout, "reconfigure"):
+from src.ocr_extract import load_image, extract_image_data, extract_text
+from src.field_parser import (
+    parse_general_data,
+    print_general_results,
+    parse_fields,
+    print_results,
+)
+from src.screen_extractor import extract_fields
+
+OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
+
+# Warm up OCR engine at startup so camera capture runs instantly
+try:
+    from src.ocr_extract import _get_easyocr_reader
+    _get_easyocr_reader()
+except Exception:
+    pass
+
+
+def process_burst_images(frames: list, source_label: str = "Webcam Burst", mode: str = "dialysis", engine: str = "auto"):
+    """
+    Processes a burst of 3 frames captured over 1.5s:
+      1. Runs unwarping + spatial label-value extraction on each frame
+      2. Performs majority consensus voting across all frames for maximum accuracy
+      3. Prints clean results table to terminal
+      4. Saves JSON results and primary PNG image to output/ folder
+    """
+    if not frames:
+        print("No frames provided to process. Aborting.")
+        return None
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    image_save_path = os.path.join(OUTPUT_DIR, f"capture_{ts}.png")
+    cv2.imwrite(image_save_path, frames[0])
+
+    if mode == "dialysis":
+        print(f"\nProcessing {len(frames)}-Frame Burst with Consensus Voting on: {source_label} ...")
+        frame_results = []
+        for idx, frame in enumerate(frames, 1):
+            print(f" -> Processing Frame {idx}/{len(frames)} (Perspective Unwarp & Spatial OCR)...")
+            res = extract_fields(frame, engine=engine)
+            frame_results.append(res)
+
+        from src.field_parser import consensus_vote_dialysis_fields
+        consensus_results = consensus_vote_dialysis_fields(frame_results)
+
+        print_results(consensus_results)
+
+        lines_data = extract_image_data(frames[0], engine=engine)
+        parsed_data = parse_general_data(lines_data)
+        if parsed_data.get("numbers_found"):
+            print("--- ALL RAW NUMERIC READINGS DETECTED IN PHOTO ---")
+            unique_nums = list(dict.fromkeys(parsed_data["numbers_found"]))
+            print("  " + ", ".join(unique_nums))
+            print("=" * 55 + "\n")
+
+        saved_payload = {
+            "source": source_label,
+            "mode": "dialysis_burst",
+            "timestamp": ts,
+            "image_saved_at": image_save_path,
+            "total_frames_analyzed": len(frames),
+            "fields": consensus_results,
+            "all_raw_numbers": parsed_data.get("numbers_found", []),
+            "raw_text": parsed_data.get("raw_text", "")
+        }
+    else:
+        print(f"\nScraping Image Data from: {source_label} ...")
+        lines_data = extract_image_data(frames[0], engine=engine)
+        parsed_data = parse_general_data(lines_data)
+        print_general_results(parsed_data, source_label=source_label)
+
+        saved_payload = {
+            "source": source_label,
+            "mode": "general",
+            "timestamp": ts,
+            "image_saved_at": image_save_path,
+            "total_lines": len(parsed_data["lines"]),
+            "key_value_pairs": parsed_data["key_value_pairs"],
+            "numbers_found": parsed_data["numbers_found"],
+            "raw_text": parsed_data["raw_text"],
+        }
+
+    out_json_path = os.path.join(OUTPUT_DIR, f"scraped_data_{ts}.json")
+    with open(out_json_path, "w", encoding="utf-8") as f:
+        json.dump(saved_payload, f, indent=2, ensure_ascii=False)
+
+    print(f"Saved consensus JSON to: {out_json_path}")
+    print(f"Saved captured frame image to: {image_save_path}\n")
+
+    return saved_payload
+
+
+def choose_camera_index() -> int:
+    """Detect connected cameras and prompt user to choose camera index."""
     try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        from src.capture import find_available_cameras
+        cams = find_available_cameras(max_tested=4)
     except Exception:
-        pass
+        cams = [0]
 
-import cv2
-import numpy as np
-from dotenv import load_dotenv
-from flask import Flask, Response, jsonify, render_template_string
+    if not cams:
+        cams = [0]
 
-from src.extractor import extract_from_frame, open_camera, load_dataset_file
-
-# Suppress noisy Flask dev server console logs so terminal JSON output stays clean
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
-
-# Load .env file
-ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-load_dotenv(ENV_FILE)
-
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
-DATASET_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset.json")
-
-app = Flask(__name__)
-
-# Shared state between Camera, Web Server, and Interval Extraction Loop
-_lock = threading.Lock()
-_latest_frame = None
-_latest_data = {}
-_latest_item_count = 0
-_latest_timestamp = ""
-_camera_ok = False
-_camera_status_msg = "Connecting to camera..."
-_recent_frames = []
-_running = True
-
-
-def get_local_ip():
-    """Get primary local network IP address."""
+    print(f"\nDetecting connected cameras... Found camera index(es): {cams}")
+    default_cam = cams[-1] if len(cams) > 1 else cams[0]
+    cam_str = input(f"Enter Camera Index to use (0 = Laptop Camera, 1 = USB Webcam) [Default: {default_cam}]: ").strip()
+    if not cam_str:
+        return default_cam
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
+        return int(cam_str)
+    except ValueError:
+        print(f"Invalid input. Using camera index {default_cam}.")
+        return default_cam
 
 
-def load_config():
-    cfg = {
-        "interval_seconds": 5,
-        "camera_index": 0,
-        "camera_resolution": [1280, 720],
-        "server_port": 5000,
-        "server_host": "0.0.0.0",
-    }
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                cfg.update(json.load(f))
-        except Exception:
-            pass
-
-    # dataset.json overrides fields definition if present
-    dataset = load_dataset_file(DATASET_FILE)
-    if dataset:
-        cfg["fields"] = dataset
-
-    # .env overrides config.json
-    if os.getenv("SERVER_PORT"):
-        cfg["server_port"] = int(os.getenv("SERVER_PORT"))
-    if os.getenv("SERVER_HOST"):
-        cfg["server_host"] = os.getenv("SERVER_HOST")
-    if os.getenv("INTERVAL_SECONDS"):
-        cfg["interval_seconds"] = int(os.getenv("INTERVAL_SECONDS"))
-    if os.getenv("CAMERA_INDEX"):
-        cfg["camera_index"] = int(os.getenv("CAMERA_INDEX"))
-
-    return cfg
+def run_upload(path: str, mode: str = "dialysis", engine: str = "auto"):
+    path_clean = path.strip().strip('"').strip("'")
+    img = load_image(path_clean)
+    process_burst_images([img], source_label=os.path.basename(path_clean), mode=mode, engine=engine)
 
 
-def create_placeholder_frame(text="Camera Connecting...", subtext="Checking video device"):
-    """Create a dark placeholder image with status text."""
-    img = np.zeros((480, 640, 3), dtype=np.uint8)
-    img[:] = (25, 20, 20)
-    cv2.putText(img, text, (40, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 165, 255), 2)
-    cv2.putText(img, subtext, (40, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1)
-    return img
+def run_webcam(headless: bool = False, camera_index: int = 0, mode: str = "dialysis", engine: str = "auto"):
+    from src.capture import capture_from_webcam, capture_headless
+    if headless:
+        print("Capturing 3-frame burst from webcam (headless mode)...")
+        frames = capture_headless(camera_index=camera_index, num_frames=3)
+    else:
+        frames = capture_from_webcam(camera_index=camera_index, num_frames=3)
+
+    if not frames:
+        print("No frames captured. Aborting.")
+        return
+
+    process_burst_images(frames, source_label=f"Webcam (Camera #{camera_index})", mode=mode, engine=engine)
 
 
-# ─── Web UI Template ─────────────────────────────────────────
+def run_live(camera_index: int = 0, mode: str = "dialysis", engine: str = "auto"):
+    from src.capture import capture_live_stream
 
-HTML_PAGE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Display Data Extractor — Live View</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-    background: #0f1117;
-    color: #e4e4e7;
-    min-height: 100vh;
-  }
-  header {
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-    padding: 16px 24px;
-    border-bottom: 1px solid #2a2a3e;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-  header h1 {
-    font-size: 20px;
-    font-weight: 600;
-    color: #60a5fa;
-  }
-  header .status {
-    font-size: 13px;
-    padding: 6px 14px;
-    border-radius: 20px;
-    font-weight: 500;
-  }
-  .status-ok { background: #064e3b; color: #34d399; }
-  .status-warn { background: #7c2d12; color: #fb923c; animation: pulse 1.5s infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+    def live_callback(frame):
+        process_burst_images([frame], source_label=f"Live Webcam #{camera_index}", mode=mode, engine=engine)
 
-  .alert-banner {
-    background: linear-gradient(90deg, #991b1b, #b91c1c);
-    color: #fecaca;
-    padding: 12px 24px;
-    font-size: 14px;
-    font-weight: 600;
-    text-align: center;
-    display: none;
-  }
-  .alert-banner.show { display: block; }
-
-  .container {
-    display: flex;
-    gap: 20px;
-    padding: 20px;
-    max-height: calc(100vh - 80px);
-  }
-
-  .camera-section {
-    flex: 1.5;
-    background: #1a1a2e;
-    border-radius: 12px;
-    overflow: hidden;
-    border: 1px solid #2a2a3e;
-    display: flex;
-    flex-direction: column;
-  }
-  .camera-section .title-bar {
-    padding: 12px 16px;
-    background: #16213e;
-    font-size: 14px;
-    font-weight: 600;
-    color: #93c5fd;
-    border-bottom: 1px solid #2a2a3e;
-  }
-  .camera-section img {
-    width: 100%;
-    height: auto;
-    display: block;
-    background: #000;
-    object-fit: contain;
-  }
-
-  .data-section {
-    flex: 1;
-    background: #1a1a2e;
-    border-radius: 12px;
-    border: 1px solid #2a2a3e;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-  .data-section .title-bar {
-    padding: 12px 16px;
-    background: #16213e;
-    font-size: 14px;
-    font-weight: 600;
-    color: #93c5fd;
-    border-bottom: 1px solid #2a2a3e;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-  .data-section .title-bar span { font-size: 11px; color: #64748b; font-weight: 400; }
-  .data-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: 12px;
-  }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-  }
-  table th {
-    text-align: left;
-    padding: 8px 10px;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: #64748b;
-    border-bottom: 1px solid #2a2a3e;
-  }
-  table td {
-    padding: 10px;
-    font-size: 14px;
-    border-bottom: 1px solid #1e1e30;
-  }
-  table tr:hover { background: #1e1e30; }
-  td.field-name { color: #94a3b8; font-weight: 500; }
-  td.field-value {
-    color: #34d399;
-    font-weight: 700;
-    font-size: 16px;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .empty-state {
-    text-align: center;
-    padding: 40px 20px;
-    color: #64748b;
-    font-size: 14px;
-  }
-  .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
-
-  @media (max-width: 768px) {
-    .container { flex-direction: column; max-height: none; }
-  }
-</style>
-</head>
-<body>
-
-<header>
-  <h1>📺 Display Data Extractor</h1>
-  <div class="status" id="statusBadge">Connecting...</div>
-</header>
-
-<div class="alert-banner" id="alertBanner">
-  ⚠️ CAMERA NOT ALIGNED — Point camera at the display to read values.
-</div>
-
-<div class="container">
-  <div class="camera-section">
-    <div class="title-bar">📷 Live Camera Feed — Position & Focus Camera</div>
-    <img id="cameraFeed" src="/video_feed" alt="Camera Feed">
-  </div>
-
-  <div class="data-section">
-    <div class="title-bar">
-      📊 Extracted Display Data
-      <span id="lastUpdate">Waiting...</span>
-    </div>
-    <div class="data-body" id="dataBody">
-      <div class="empty-state">
-        <div class="icon">📡</div>
-        <div>Waiting for first extraction...</div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<script>
-function fetchData() {
-  fetch('/data')
-    .then(r => r.json())
-    .then(d => {
-      const badge = document.getElementById('statusBadge');
-      const alert = document.getElementById('alertBanner');
-
-      if (!d.camera_ok) {
-        badge.className = 'status status-warn';
-        badge.textContent = '⚠ ' + (d.status_msg || 'Camera Error');
-        alert.classList.add('show');
-        alert.textContent = '⚠️ ' + (d.status_msg || 'Camera Not Detected. Check USB connection.');
-        return;
-      }
-
-      if (d.items_detected === 0) {
-        badge.className = 'status status-warn';
-        badge.textContent = '⚠ No Text Detected';
-        alert.classList.add('show');
-        alert.textContent = '⚠️ CAMERA NOT ALIGNED — No readable text detected. Please aim camera at display.';
-      } else if (Object.keys(d.data || {}).length === 0) {
-        badge.className = 'status status-warn';
-        badge.textContent = '● Scanning (' + d.items_detected + ' words)';
-        alert.classList.remove('show');
-      } else {
-        badge.className = 'status status-ok';
-        badge.textContent = '● Reading OK (' + Object.keys(d.data).length + ' fields)';
-        alert.classList.remove('show');
-      }
-
-      if (d.timestamp) {
-        const t = new Date(d.timestamp);
-        document.getElementById('lastUpdate').textContent =
-          'Updated: ' + t.toLocaleTimeString();
-      }
-
-      const data = d.data || {};
-      const keys = Object.keys(data);
-      const body = document.getElementById('dataBody');
-
-      if (keys.length === 0) {
-        body.innerHTML = '<div class="empty-state"><div class="icon">📡</div><div>Scanning for display numbers...</div></div>';
-        return;
-      }
-
-      let html = '<table><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody>';
-      for (const k of keys) {
-        const item = data[k];
-        html += '<tr><td class="field-name">' + escHtml(item.name || k) + '</td>';
-        html += '<td class="field-value">' + escHtml(String(item.value)) + '</td></tr>';
-      }
-      html += '</tbody></table>';
-      body.innerHTML = html;
-    })
-    .catch(() => {
-      document.getElementById('statusBadge').className = 'status status-warn';
-      document.getElementById('statusBadge').textContent = '⚠ Disconnected';
-    });
-}
-
-function escHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-// Poll data endpoint every 1.5 seconds
-setInterval(fetchData, 1500);
-fetchData();
-</script>
-</body>
-</html>
-"""
+    capture_live_stream(camera_index=camera_index, process_fn=live_callback, frame_interval=2.0)
 
 
-@app.after_request
-def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    return response
+def interactive_menu():
+    print("=" * 55)
+    print(" WEBCAM IMAGE DATA EXTRACTOR & TERMINAL SCRAPER ")
+    print("=" * 55)
+    print("1) Capture from Webcam (GUI preview window - Dialysis Mode)")
+    print("2) Live Webcam Stream Scraping (Continuous real-time OCR)")
+    print("3) Capture from Webcam (Headless mode)")
+    print("4) Upload an Image file")
+    print("5) Dialysis Screen Mode (Specialized Medical Display)")
+    print("Q) Quit")
+    print("-" * 55)
 
+    choice = input("Choose an option [1-5 / Q]: ").strip().lower()
 
-@app.route("/")
-def index():
-    return render_template_string(HTML_PAGE)
-
-
-@app.route("/data")
-def data_api():
-    with _lock:
-        return jsonify({
-            "camera_ok": _camera_ok,
-            "status_msg": _camera_status_msg,
-            "items_detected": _latest_item_count,
-            "timestamp": _latest_timestamp,
-            "data": _latest_data,
-        })
-
-
-def generate_mjpeg():
-    """Yields continuous MJPEG frames for live camera stream without blocking."""
-    while _running:
-        with _lock:
-            frame = _latest_frame
-
-        if frame is None:
-            frame = create_placeholder_frame("Connecting...", "Waiting for camera frame")
-
-        try:
-            _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 65])
-            yield (b"--frame\r\n"
-                   b"Content-Type: image/jpeg\r\n\r\n" + jpeg.tobytes() + b"\r\n")
-        except Exception:
-            pass
-
-        time.sleep(0.04)
-
-
-@app.route("/video_feed")
-def video_feed():
-    return Response(
-        generate_mjpeg(),
-        mimetype="multipart/x-mixed-replace; boundary=frame"
-    )
-
-
-# ─── Camera Frame Ingestion Thread (30 FPS) ──────────────────
-
-def camera_capture_loop(cap):
-    """Continuously reads frames from camera into memory buffer."""
-    global _latest_frame, _recent_frames, _camera_ok, _camera_status_msg, _running
-
-    while _running and cap and cap.isOpened():
-        try:
-            ret, frame = cap.read()
-        except Exception:
-            ret, frame = False, None
-
-        if ret and frame is not None and frame.size > 0:
-            with _lock:
-                _latest_frame = frame.copy()
-                _camera_ok = True
-                _camera_status_msg = "OK"
-                _recent_frames.append(frame.copy())
-                if len(_recent_frames) > 4:
-                    _recent_frames.pop(0)
+    if choice == "1":
+        cam_idx = choose_camera_index()
+        run_webcam(headless=False, camera_index=cam_idx, mode="dialysis")
+    elif choice == "2":
+        cam_idx = choose_camera_index()
+        run_live(camera_index=cam_idx, mode="dialysis")
+    elif choice == "3":
+        cam_idx = choose_camera_index()
+        run_webcam(headless=True, camera_index=cam_idx, mode="dialysis")
+    elif choice == "4":
+        path = input("Enter path to image file: ").strip().strip('"').strip("'")
+        if path:
+            run_upload(path, mode="dialysis")
+    elif choice == "5":
+        path = input("Enter image path (or press Enter for webcam capture): ").strip().strip('"').strip("'")
+        if path:
+            run_upload(path, mode="dialysis")
         else:
-            with _lock:
-                _camera_ok = False
-                _camera_status_msg = "Frame drop"
-                _latest_frame = create_placeholder_frame("Camera Frame Drop", "Re-capturing...")
+            cam_idx = choose_camera_index()
+            run_webcam(mode="dialysis", camera_index=cam_idx)
+    elif choice in ("q", "quit", "exit"):
+        print("Exiting.")
+        sys.exit(0)
+    else:
+        print("Invalid choice.")
 
-        time.sleep(0.03)  # ~30fps
 
+def main():
+    parser = argparse.ArgumentParser(description="Webcam Image Data Extractor & Terminal Scraper")
+    parser.add_argument("-u", "--upload", help="Path to an image file to process")
+    parser.add_argument("-w", "--webcam", action="store_true", help="Capture frame interactively from webcam GUI")
+    parser.add_argument("-H", "--headless", action="store_true", help="Capture webcam frame headlessly")
+    parser.add_argument("-L", "--live", action="store_true", help="Run live webcam text scraper stream")
+    parser.add_argument("-c", "--camera", type=int, default=0, help="Webcam camera index (default: 0)")
+    parser.add_argument("-m", "--mode", choices=["general", "dialysis"], default="dialysis", help="Extraction mode (default: dialysis)")
+    parser.add_argument("-e", "--engine", choices=["auto", "easyocr", "tesseract"], default="auto", help="OCR Engine")
 
-# ─── Main Unified Application ────────────────────────────────
-
-def run_application():
-    global _running, _latest_data, _latest_item_count, _latest_timestamp
-    config = load_config()
-
-    parser = argparse.ArgumentParser(description="Unified Display Data Extractor & Web Server")
-    parser.add_argument("-i", "--interval", type=float, help="Interval in seconds")
-    parser.add_argument("-p", "--port", type=int, help="Server port")
-    parser.add_argument("-c", "--camera", type=int, help="Camera index")
     args = parser.parse_args()
 
-    interval = args.interval or config.get("interval_seconds", 5)
-    cam_idx = args.camera if args.camera is not None else config.get("camera_index", 0)
-    port = args.port or config.get("server_port", 5000)
-    host = "0.0.0.0"
-    resolution = tuple(config.get("camera_resolution", [1280, 720]))
-    local_ip = get_local_ip()
-
-    print("=" * 62)
-    print(f"  >>> SERVER IS RUNNING ON PORT: {port} <<<")
-    print("=" * 62)
-    print(f"  Web Dashboard (Local):   http://localhost:{port}")
-    print(f"  Web Dashboard (Network): http://{local_ip}:{port}")
-    print(f"  Extraction Interval:     {interval}s (Multi-frame 100% Accuracy)")
-    print(f"  Camera Index:            {cam_idx}")
-    print("=" * 62)
-    print("  Streaming live data and printing JSON every 5s. Ctrl+C to stop.\n", flush=True)
-
-    # 1. Start Flask Web Server in background daemon thread
-    def start_web_server():
-        try:
-            app.run(host=host, port=port, debug=False, threaded=True)
-        except OSError as e:
-            if "Address already in use" in str(e) or "10048" in str(e):
-                alt_port = 8080 if port != 8080 else 5001
-                print(f"[Notice] Port {port} occupied. Web server active on: http://{local_ip}:{alt_port}", flush=True)
-                app.run(host=host, port=alt_port, debug=False, threaded=True)
-
-    web_thread = threading.Thread(target=start_web_server, daemon=True)
-    web_thread.start()
-
-    # 2. Open Camera
-    try:
-        cap = open_camera(cam_idx, resolution)
-    except RuntimeError as e:
-        print(f"[ERROR] {e}", file=sys.stderr)
-        sys.exit(1)
-
-    # 3. Start Camera Capture Ingestion Thread
-    cam_thread = threading.Thread(target=camera_capture_loop, args=(cap,), daemon=True)
-    cam_thread.start()
-
-    # Graceful shutdown handler
-    def handle_stop(sig, frame):
-        global _running
-        _running = False
-    signal.signal(signal.SIGINT, handle_stop)
-    if hasattr(signal, "SIGTERM"):
-        signal.signal(signal.SIGTERM, handle_stop)
-
-    reading_num = 0
-    fields = config.get("fields")
-
-    try:
-        while _running:
-            time.sleep(interval)
-            reading_num += 1
-
-            # Process latest fresh frame from memory buffer
-            latest_frame = None
-            with _lock:
-                if _latest_frame is not None:
-                    latest_frame = _latest_frame.copy()
-                elif _recent_frames:
-                    latest_frame = _recent_frames[-1].copy()
-
-            if latest_frame is None:
-                continue
-
-            verified_data, max_items = extract_from_frame(latest_frame, fields_config=fields)
-
-            now_iso = datetime.now().isoformat()
-
-            with _lock:
-                _latest_data = verified_data
-                _latest_item_count = len(verified_data)
-                _latest_timestamp = now_iso
-
-            # Zero False-Data Requirement: Only print JSON when readable data is found
-            if verified_data:
-                packet = {
-                    "reading": reading_num,
-                    "timestamp": now_iso,
-                    "items_detected": len(verified_data),
-                    "data": verified_data,
-                }
-                print(json.dumps(packet, indent=2, ensure_ascii=False), flush=True)
-            else:
-                print(
-                    f"[{now_iso}] [ALERT] CAMERA NOT ALIGNED - No readable text detected. Please adjust camera to point at the display.",
-                    flush=True
-                )
-
-    finally:
-        _running = False
-        cap.release()
-        print("\n[Stopped] Camera and server released cleanly.")
+    if args.upload:
+        run_upload(args.upload, mode=args.mode, engine=args.engine)
+    elif args.live:
+        run_live(camera_index=args.camera, mode=args.mode, engine=args.engine)
+    elif args.webcam or args.headless:
+        run_webcam(headless=args.headless, camera_index=args.camera, mode=args.mode, engine=args.engine)
+    else:
+        interactive_menu()
 
 
 if __name__ == "__main__":
-    run_application()
+    main()
