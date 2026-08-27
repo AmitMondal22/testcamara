@@ -379,12 +379,53 @@ def extract_from_boxes(img_gray, scale):
 # Field Mapping & JSON Formatting
 # ──────────────────────────────────────────────────────────────
 
+def _generate_field_aliases(canonical_name, field_key):
+    """Generate normalized aliases for display labels."""
+    aliases = set()
+    raw_list = [canonical_name, field_key]
+
+    for item in raw_list:
+        clean = item.lower().strip()
+        aliases.add(clean)
+        # Without dots/punctuation
+        clean_nopunct = re.sub(r'[^a-zA-Z0-9\s]+', ' ', clean)
+        aliases.add(re.sub(r'\s+', ' ', clean_nopunct).strip())
+        # Compressed no spaces
+        aliases.add(re.sub(r'[\s_\-]+', '', clean))
+
+    # Add specific domain abbreviations
+    name_low = canonical_name.lower()
+    if "uf" in name_low and "vol" in name_low:
+        aliases.update(["uf vol", "uf volume", "volume", "ufvol"])
+    if "uf" in name_low and "time" in name_low:
+        aliases.update(["uf time left", "time left", "time", "uf time", "timeleft"])
+    if "uf" in name_low and "goal" in name_low:
+        aliases.update(["uf goal", "goal", "ufgoal"])
+    if "eff" in name_low and "blood" in name_low:
+        aliases.update(["eff blood flow", "eff. blood flow", "eff blood", "blood flow", "effbloodflow"])
+    if "cum" in name_low and "blood" in name_low:
+        aliases.update(["cum blood vol", "cum. blood vol", "cum blood", "blood vol", "cumbloodvol"])
+    if "uf" in name_low and "rate" in name_low:
+        aliases.update(["uf rate", "rate", "ufrate"])
+    if "kt" in name_low:
+        aliases.update(["kt/v", "kt / v", "ktv", "kt v", "kt"])
+    if "plasma" in name_low:
+        aliases.update(["plasma na", "plasma", "na", "plasmana"])
+    if "clearance" in name_low:
+        aliases.update(["clearance", "clr"])
+    if "goal" in name_low:
+        aliases.update(["goal in", "goal", "goalin"])
+
+    return list(aliases)
+
+
 def format_output_dict(raw_pairs, dataset_config=None):
     """
-    Format extracted raw pairs into the target JSON structure:
-    {"abc": {"name": "abc abc", "value": 10}}
-    Strict validation: When dataset_config is provided, ONLY certified fields matching the schema
-    are returned to guarantee 100% accuracy with zero false data.
+    Format extracted raw pairs into target JSON structure using dataset.json keys:
+    {
+      "uf_volume": {"name": "UF Volume", "value": 2269},
+      "kt_v": {"name": "Kt/V", "value": 0.75}
+    }
     """
     output = {}
     matched_raw_keys = set()
@@ -397,9 +438,10 @@ def format_output_dict(raw_pairs, dataset_config=None):
             data_type = field_spec.get("type", None)
 
             # Build list of aliases
-            aliases = [a.strip().lower() for a in field_spec.get("aliases", []) if a]
-            aliases.append(canonical_name.strip().lower())
-            aliases.append(field_key.strip().lower())
+            aliases = _generate_field_aliases(canonical_name, field_key)
+            for custom_alias in field_spec.get("aliases", []):
+                if custom_alias:
+                    aliases.append(custom_alias.strip().lower())
 
             # Find matching extracted pair
             best_match = None
@@ -407,13 +449,19 @@ def format_output_dict(raw_pairs, dataset_config=None):
 
             for raw_lbl, (lbl_name, val) in raw_pairs.items():
                 lbl_clean = lbl_name.strip().lower()
+                lbl_clean_nopunct = re.sub(r'[^a-zA-Z0-9\s]+', ' ', lbl_clean).strip()
+                lbl_clean_nopunct = re.sub(r'\s+', ' ', lbl_clean_nopunct)
+
                 for alias in aliases:
-                    if lbl_clean == alias:
+                    alias_clean = alias.strip().lower()
+                    if lbl_clean == alias_clean or lbl_clean_nopunct == alias_clean:
                         best_match = (raw_lbl, val)
                         best_score = 0
                         break
-                    elif (len(lbl_clean) >= 3 and alias in lbl_clean) or (len(alias) >= 3 and lbl_clean in alias):
-                        diff = abs(len(lbl_clean) - len(alias))
+                    elif (len(lbl_clean) >= 3 and alias_clean in lbl_clean) or \
+                         (len(alias_clean) >= 3 and lbl_clean in alias_clean) or \
+                         (len(lbl_clean_nopunct) >= 3 and alias_clean in lbl_clean_nopunct):
+                        diff = abs(len(lbl_clean) - len(alias_clean))
                         if diff < best_score:
                             best_score = diff
                             best_match = (raw_lbl, val)
@@ -429,7 +477,7 @@ def format_output_dict(raw_pairs, dataset_config=None):
                     "value": cast_value(matched_val, data_type)
                 }
 
-        # In strict schema mode, only return verified dataset fields
+        # Return certified dataset fields
         return output
 
     # Dynamic mode (when no dataset_config is provided): strictly filter out noise
