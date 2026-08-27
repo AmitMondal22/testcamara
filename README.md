@@ -10,20 +10,76 @@ Prints clean JSON to stdout every 5 seconds. Zero disk storage. Lightweight.
 - **Tesseract OCR** (`sudo apt install tesseract-ocr` on Linux)
 - Python 3.9+
 
-## Install
+---
+
+## Raspberry Pi USB Webcam Setup
+
+If your USB webcam is not opening on Raspberry Pi 4, follow these steps:
+
+### 1. Grant Camera Permissions to your user
+```bash
+sudo usermod -a -G video $USER
+```
+*(Log out and log back in for changes to take effect)*
+
+### 2. Install V4L2 Tools & Check Connected Devices
+```bash
+sudo apt update
+sudo apt install v4l-utils tesseract-ocr -y
+
+# Check video device files:
+ls -l /dev/video*
+
+# Check recognized webcam hardware:
+v4l2-ctl --list-devices
+```
+
+### 3. Run the Camera Diagnostic Tool
+```bash
+python test_camera.py
+```
+This tool automatically scans indices `0..8` and tells you which camera index works (e.g. `CAMERA_INDEX=0` or `CAMERA_INDEX=2`).
+
+### 4. Set Camera Index in `.env`
+Edit `.env`:
+```env
+CAMERA_INDEX=0
+SERVER_PORT=5000
+SERVER_HOST=0.0.0.0
+INTERVAL_SECONDS=5
+```
+
+---
+
+## Install & Run
 
 ```bash
+# Virtual environment setup
 python -m venv env
 source env/bin/activate          # Linux/RPi
-# .\env\Scripts\activate         # Windows
 
 pip install -r requirements.txt
 ```
 
+### Option A: Camera Adjustment Web Server
+```bash
+python server.py
+```
+Open **`http://<rpi-ip>:5000`** in any browser on your local network:
+- **Left**: Live MJPEG video stream to physically aim & focus your camera.
+- **Right**: Real-time extracted table of detected metrics.
+- **Top banner**: Camera alignment warning if no readable text is detected.
+
+### Option B: Terminal JSON Data Extractor
+```bash
+python main.py
+```
+
+---
+
 ## Schema Configuration (`dataset.json`)
 
-Define your target display fields and data types in `dataset.json`:
-
+Define target fields and types:
 ```json
 {
   "uf_volume": {
@@ -45,16 +101,7 @@ Define your target display fields and data types in `dataset.json`:
 }
 ```
 
-### Supported Data Types
-- `"number"`: Automatically preserves integers (`2269`) or decimals (`0.75`)
-- `"int"`: Integer type
-- `"float"`: Floating-point decimal
-- `"string"`: String / time text (`"1:43"`)
-
----
-
-## Output JSON Format
-
+Output format:
 ```json
 {
   "uf_volume": {
@@ -68,45 +115,6 @@ Define your target display fields and data types in `dataset.json`:
   "kt_v": {
     "name": "Kt/V",
     "value": 0.75
-  },
-  "plasma_na": {
-    "name": "Plasma Na",
-    "value": 134
   }
 }
-```
-
----
-
-## Usage
-
-### 1. Terminal Data Extractor (JSON stdout every 5s)
-
-```bash
-python main.py
-```
-
-### 2. Camera Adjustment Web Server
-
-```bash
-python server.py
-```
-
-Open `http://localhost:5000` (or `http://<rpi-ip>:5000`) in your browser:
-- **Left**: Live camera stream for positioning and focusing.
-- **Right**: Real-time extracted table of detected metrics.
-- **Top banner**: Camera alignment warning if no readable text is detected.
-
-## Project Structure
-
-```
-├── dataset.json        # Target field schema & data types
-├── config.json         # Runtime settings (interval, camera index, port)
-├── .env                # Environment variables (SERVER_PORT, CAMERA_INDEX)
-├── main.py             # Continuous extraction loop → JSON stdout
-├── server.py           # Flask web server (camera view + data sidebar)
-├── requirements.txt    # opencv-python, pytesseract, flask, python-dotenv
-└── src/
-    ├── __init__.py
-    └── extractor.py    # OCR extraction engine + dataset.json schema matcher
 ```

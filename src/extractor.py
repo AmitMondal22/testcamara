@@ -484,21 +484,98 @@ def extract_from_frame(frame, fields_config=None):
     return formatted_data, total_items
 
 
-def open_camera(camera_index=0, resolution=(1280, 720)):
-    """Open camera with optimal settings for Raspberry Pi 4."""
-    cap = cv2.VideoCapture(
-        camera_index,
-        cv2.CAP_V4L2 if sys.platform.startswith("linux") else cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY
-    )
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(camera_index)
-
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open camera {camera_index}")
-
+def _test_and_configure_camera(cap, resolution):
+    """Set resolution, MJPEG codec, and test reading a frame."""
     w, h = resolution
+    
+    # Use MJPEG on Linux/RPi for USB webcams (avoids USB bandwidth bottleneck)
+    if sys.platform.startswith("linux"):
+        try:
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        except Exception:
+            pass
+
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-    return cap
+    # Test reading a frame
+    for _ in range(3):
+        ret, frame = cap.read()
+        if ret and frame is not None and frame.size > 0:
+            return True
+    return False
+
+
+def find_available_cameras(max_tested=8):
+    """Scan and return list of working camera device indices."""
+    available = []
+    for idx in range(max_tested):
+        backend = cv2.CAP_V4L2 if sys.platform.startswith("linux") else cv2.CAP_ANY
+        cap = cv2.VideoCapture(idx, backend)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(idx)
+        if cap.isOpened():
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                available.append(idx)
+            cap.release()
+    return available
+
+
+def open_camera(camera_index=0, resolution=(1280, 720)):
+    """
+    Robustly open a camera on Raspberry Pi 4 or PC.
+    Tries requested index with V4L2 / DSHOW / ANY, tests frame capture,
+    and automatically falls back to scanning available devices if default fails.
+    """
+    # Normalize camera index if passed as string
+    if isinstance(camera_index, str):
+        if camera_index.isdigit():
+            camera_index = int(camera_index)
+        elif camera_index.startswith("/dev/video"):
+            try:
+                camera_index = int(camera_index.replace("/dev/video", ""))
+            except ValueError:
+                pass
+
+    # Try 1: Preferred native OS backend (V4L2 on Linux/RPi, DSHOW on Windows)
+    backends = []
+    if sys.platform.startswith("linux"):
+        backends = [cv2.CAP_V4L2, cv2.CAP_ANY]
+    elif sys.platform.startswith("win"):
+        backends = [cv2.CAP_DSHOW, cv2.CAP_ANY]
+    else:
+        backends = [cv2.CAP_ANY]
+
+    for backend in backends:
+        try:
+            cap = cv2.VideoCapture(camera_index, backend)
+            if cap.isOpened() and _test_and_configure_camera(cap, resolution):
+                print(f"[Camera] Connected to camera index {camera_index} (backend: {backend})", flush=True)
+                return cap
+            cap.release()
+        except Exception:
+            pass
+
+    # Try 2: Auto-scan other video device indices if requested index failed
+    print(f"[Camera] Camera index {camera_index} not responding. Scanning for active webcams...", flush=True)
+    working_indices = find_available_cameras(max_tested=8)
+
+    if working_indices:
+        fallback_idx = working_indices[0]
+        print(f"[Camera] Found active webcam at index {fallback_idx} (available: {working_indices})", flush=True)
+        for backend in backends:
+            cap = cv2.VideoCapture(fallback_idx, backend)
+            if cap.isOpened() and _test_and_configure_camera(cap, resolution):
+                return cap
+            cap.release()
+
+    raise RuntimeError(
+        f"Cannot open webcam on index {camera_index} or any /dev/video* devices.\n"
+        f"Raspberry Pi USB Webcam Troubleshooting:\n"
+        f"  1. Check connected devices:  ls -l /dev/video*\n"
+        f"  2. Check user permissions:   sudo usermod -a -G video $USER\n"
+        f"  3. Install v4l-utils:        sudo apt install v4l-utils && v4l2-ctl --list-devices\n"
+        f"  4. Set CAMERA_INDEX in .env to the correct video device number (e.g. CAMERA_INDEX=0 or 2)"
+    )
