@@ -1,7 +1,7 @@
 # Display Data Extractor — Raspberry Pi 4
 
 Extract structured text/numeric data from **any** LCD/LED display screen using a camera.  
-Prints clean JSON to stdout every 5 seconds. Zero disk storage. Lightweight.
+Runs **both** the Web Server (for camera view/alignment) and the Continuous JSON Extraction Process simultaneously. Zero disk storage. Lightweight.
 
 ## Requirements
 
@@ -12,74 +12,26 @@ Prints clean JSON to stdout every 5 seconds. Zero disk storage. Lightweight.
 
 ---
 
-## Raspberry Pi USB Webcam Setup
-
-If your USB webcam is not opening on Raspberry Pi 4, follow these steps:
-
-### 1. Grant Camera Permissions to your user
-```bash
-sudo usermod -a -G video $USER
-```
-*(Log out and log back in for changes to take effect)*
-
-### 2. Install V4L2 Tools & Check Connected Devices
-```bash
-sudo apt update
-sudo apt install v4l-utils tesseract-ocr -y
-
-# Check video device files:
-ls -l /dev/video*
-
-# Check recognized webcam hardware:
-v4l2-ctl --list-devices
-```
-
-### 3. Run the Camera Diagnostic Tool
-```bash
-python test_camera.py
-```
-This tool automatically scans indices `0..8` and tells you which camera index works (e.g. `CAMERA_INDEX=0` or `CAMERA_INDEX=2`).
-
-### 4. Set Camera Index in `.env`
-Edit `.env`:
-```env
-CAMERA_INDEX=0
-SERVER_PORT=5000
-SERVER_HOST=0.0.0.0
-INTERVAL_SECONDS=5
-```
-
----
-
-## Install & Run
+## Quick Start (Runs Server & Extractor Simultaneously)
 
 ```bash
-# Virtual environment setup
-python -m venv env
-source env/bin/activate          # Linux/RPi
-
+# 1. Install dependencies
 pip install -r requirements.txt
-```
 
-### Option A: Camera Adjustment Web Server
-```bash
-python server.py
-```
-Open **`http://<rpi-ip>:5000`** in any browser on your local network:
-- **Left**: Live MJPEG video stream to physically aim & focus your camera.
-- **Right**: Real-time extracted table of detected metrics.
-- **Top banner**: Camera alignment warning if no readable text is detected.
-
-### Option B: Terminal JSON Data Extractor
-```bash
+# 2. Run All-in-One Command
 python main.py
 ```
+
+Running `python main.py` automatically:
+1. **Starts the Web Server** on port 5000 (`http://localhost:5000` & `http://<rpi-ip>:5000`).
+2. **Starts the Continuous Extraction Process**, printing structured JSON every 5 seconds to terminal.
+3. **Shares the Camera in RAM** with zero conflict between live streaming and OCR.
 
 ---
 
 ## Schema Configuration (`dataset.json`)
 
-Define target fields and types:
+Define target fields and data types:
 ```json
 {
   "uf_volume": {
@@ -101,20 +53,40 @@ Define target fields and types:
 }
 ```
 
-Output format:
+### JSON Output Format
 ```json
 {
-  "uf_volume": {
-    "name": "UF Volume",
-    "value": 2269
-  },
-  "uf_time_left": {
-    "name": "UF Time Left",
-    "value": "1:43"
-  },
-  "kt_v": {
-    "name": "Kt/V",
-    "value": 0.75
+  "reading": 1,
+  "timestamp": "2026-08-27T16:32:00",
+  "items_detected": 12,
+  "data": {
+    "uf_volume": {
+      "name": "UF Volume",
+      "value": 2269
+    },
+    "kt_v": {
+      "name": "Kt/V",
+      "value": 0.75
+    }
   }
 }
+```
+
+---
+
+## Web Dashboard & Camera Alignment
+
+Open **`http://localhost:5000`** (or `http://<rpi-ip>:5000`):
+- **Left**: Real-time camera video stream (30 FPS) for physical positioning & lens focus.
+- **Right**: Live extracted table of detected metrics.
+- **Top banner**: Camera alignment warning if no readable text is detected.
+
+---
+
+## Environment Variables (`.env`)
+```env
+SERVER_PORT=5000
+SERVER_HOST=0.0.0.0
+CAMERA_INDEX=0
+INTERVAL_SECONDS=5
 ```
