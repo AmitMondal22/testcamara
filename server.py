@@ -1,18 +1,16 @@
 """
 server.py
 ---------
-Flask web server for camera adjustment & live data monitoring on Raspberry Pi 4.
+High-Performance Flask Web Server for Raspberry Pi 4 Camera Adjustment & Live Data Monitoring.
 
-Features:
-  - Accessible from any device on local network (http://<rpi-ip>:5000)
-  - Live camera MJPEG stream with auto-reconnection & placeholder when camera is busy
-  - Real-time extracted data table side-by-side with camera feed
-  - Camera alignment alert (red warning when no text detected)
-  - Clean shutdown
+Architecture:
+  - Thread 1 (Camera Ingest): Continuous 30fps capture, zero lag.
+  - Thread 2 (OCR Worker): Background multi-frame temporal consensus without blocking video stream.
+  - Thread 3 (Flask Web Server): Instant HTTP/MJPEG response on 0.0.0.0 (all interfaces).
 
-Usage:
-    python server.py                    # Start server on port 5000 (0.0.0.0)
-    python server.py --port 8080        # Custom port
+Access:
+  - On Raspberry Pi:   http://localhost:5000
+  - From PC / Phone:   http://<raspberry-pi-ip>:5000
 """
 
 import json
@@ -29,7 +27,7 @@ import numpy as np
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, render_template_string
 
-from src.extractor import extract_from_frame, extract_verified_packet, open_camera, load_dataset_file
+from src.extractor import extract_from_frame, open_camera, load_dataset_file
 
 # Load .env file
 ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -40,14 +38,15 @@ DATASET_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset
 
 app = Flask(__name__)
 
-# Shared state between camera thread and web requests
+# Shared state between threads
 _lock = threading.Lock()
 _latest_frame = None
 _latest_data = {}
 _latest_item_count = 0
 _latest_timestamp = ""
 _camera_ok = False
-_camera_status_msg = "Connecting to camera..."
+_camera_status_msg = "Initializing camera..."
+_recent_frames_buffer = []  # circular buffer for multi-frame consensus
 _running = True
 
 
@@ -96,29 +95,28 @@ def load_config():
     return cfg
 
 
-def create_placeholder_frame(text="Camera Not Connected", subtext="Check USB cable or permissions"):
-    """Create a dark placeholder image with informative text."""
+def create_placeholder_frame(text="Camera Initializing...", subtext="Checking video device"):
+    """Create a dark placeholder image with status text."""
     img = np.zeros((480, 640, 3), dtype=np.uint8)
-    img[:] = (25, 20, 20)  # Dark navy
+    img[:] = (25, 20, 20)
 
-    cv2.putText(img, text, (40, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 165, 255), 2)
+    cv2.putText(img, text, (40, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 165, 255), 2)
     cv2.putText(img, subtext, (40, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1)
     return img
 
 
-def camera_extraction_loop(config):
-    """Background thread with auto-reconnection and continuous frame capture."""
-    global _latest_frame, _latest_data, _latest_item_count, _latest_timestamp, _camera_ok, _camera_status_msg, _running
+# ─── Thread 1: Camera Video Capture (30 FPS non-blocking) ───
+
+def camera_capture_loop(config):
+    """High-speed camera ingestion thread — purely captures frames into RAM."""
+    global _latest_frame, _camera_ok, _camera_status_msg, _recent_frames_buffer, _running
 
     cam_idx = config.get("camera_index", 0)
     resolution = tuple(config.get("camera_resolution", [1280, 720]))
-    interval = config.get("interval_seconds", 5)
-
-    last_extract_time = 0
     cap = None
 
     while _running:
-        # 1. Connect or reconnect to camera if needed
+        # Reconnect if needed
         if cap is None or not cap.isOpened():
             with _lock:
                 _camera_ok = False
@@ -128,19 +126,16 @@ def camera_extraction_loop(config):
                 with _lock:
                     _camera_ok = True
                     _camera_status_msg = "Camera connected"
-                print(f"[Server] Camera connected successfully on index {cam_idx}", flush=True)
             except Exception as e:
                 with _lock:
                     _camera_ok = False
-                    _camera_status_msg = f"Camera error: {e}"
-                    _latest_frame = create_placeholder_frame("Camera Not Detected", "Reconnecting...")
+                    _camera_status_msg = f"Camera not detected: {e}"
+                    _latest_frame = create_placeholder_frame("Camera Not Detected", "Check USB connection")
                 time.sleep(2.0)
                 continue
 
-        # 2. Grab frame
+        # Grab frame
         try:
-            for _ in range(2):
-                cap.grab()
             ret, frame = cap.read()
         except Exception:
             ret, frame = False, None
@@ -148,8 +143,8 @@ def camera_extraction_loop(config):
         if not ret or frame is None:
             with _lock:
                 _camera_ok = False
-                _camera_status_msg = "Frame capture failed"
-                _latest_frame = create_placeholder_frame("Camera Read Failed", "Re-initializing...")
+                _camera_status_msg = "Frame capture error"
+                _latest_frame = create_placeholder_frame("Frame Capture Error", "Reconnecting...")
             if cap:
                 cap.release()
             cap = None
@@ -160,33 +155,86 @@ def camera_extraction_loop(config):
             _latest_frame = frame.copy()
             _camera_ok = True
             _camera_status_msg = "OK"
+            
+            # Keep small buffer of recent frames for multi-frame consensus
+            _recent_frames_buffer.append(frame.copy())
+            if len(_recent_frames_buffer) > 4:
+                _recent_frames_buffer.pop(0)
 
-        # 3. Multi-frame verified extraction at interval
-        now = time.time()
-        if now - last_extract_time >= interval:
-            data, count = extract_verified_packet(
-                cap,
-                fields_config=config.get("fields"),
-                burst_count=3,
-                agreement_threshold=2
-            )
-            with _lock:
-                _latest_data = data
-                _latest_item_count = count
-                _latest_timestamp = datetime.now().isoformat()
-
-            output = {
-                "timestamp": _latest_timestamp,
-                "items_detected": count,
-                "data": data,
-            }
-            print(json.dumps(output, indent=2, ensure_ascii=False), flush=True)
-            last_extract_time = now
-
-        time.sleep(0.03)  # ~30fps smooth streaming
+        time.sleep(0.03)  # ~30fps
 
     if cap:
         cap.release()
+
+
+# ─── Thread 2: Background OCR Extraction Worker ──────────────
+
+def ocr_worker_loop(config):
+    """Background worker for OCR temporal consensus extraction."""
+    global _latest_data, _latest_item_count, _latest_timestamp, _running
+
+    interval = config.get("interval_seconds", 5)
+    fields = config.get("fields")
+
+    while _running:
+        time.sleep(interval)
+
+        frames_to_process = []
+        with _lock:
+            if _camera_ok and _recent_frames_buffer:
+                frames_to_process = [f.copy() for f in _recent_frames_buffer]
+
+        if not frames_to_process:
+            continue
+
+        # Multi-frame consensus across buffered frames
+        burst_results = []
+        max_items = 0
+
+        for f in frames_to_process:
+            data, count = extract_from_frame(f, fields_config=fields)
+            burst_results.append(data)
+            max_items = max(max_items, count)
+
+        # Cross-frame voting
+        from collections import Counter
+        verified_data = {}
+
+        all_keys = set()
+        for res in burst_results:
+            all_keys.update(res.keys())
+
+        for key in all_keys:
+            candidates = []
+            name = None
+            for res in burst_results:
+                if key in res:
+                    item = res[key]
+                    candidates.append(item["value"])
+                    name = item.get("name", key)
+
+            if candidates:
+                val_counts = Counter(candidates)
+                best_val, best_count = val_counts.most_common(1)[0]
+                # If 2 or more frames agree, accept reading
+                if best_count >= max(2, len(frames_to_process) // 2):
+                    verified_data[key] = {
+                        "name": name or key,
+                        "value": best_val
+                    }
+
+        timestamp = datetime.now().isoformat()
+        with _lock:
+            _latest_data = verified_data
+            _latest_item_count = max_items
+            _latest_timestamp = timestamp
+
+        output = {
+            "timestamp": timestamp,
+            "items_detected": max_items,
+            "data": verified_data,
+        }
+        print(json.dumps(output, indent=2, ensure_ascii=False), flush=True)
 
 
 # ─── Web Routes ──────────────────────────────────────────────
@@ -510,7 +558,7 @@ def main():
         config["camera_index"] = args.camera
 
     port = args.port or config.get("server_port", 5000)
-    host = "0.0.0.0"  # Always bind to 0.0.0.0 for LAN access
+    host = "0.0.0.0"
 
     local_ip = get_local_ip()
 
@@ -522,12 +570,25 @@ def main():
     print("=" * 60)
     print("  Press Ctrl+C to stop\n", flush=True)
 
-    # Start camera worker thread
-    cam_thread = threading.Thread(target=camera_extraction_loop, args=(config,), daemon=True)
+    # 1. Start camera video capture thread
+    cam_thread = threading.Thread(target=camera_capture_loop, args=(config,), daemon=True)
     cam_thread.start()
 
+    # 2. Start OCR worker thread
+    ocr_thread = threading.Thread(target=ocr_worker_loop, args=(config,), daemon=True)
+    ocr_thread.start()
+
+    # 3. Start Flask web server (with fallback if port is in use)
     try:
         app.run(host=host, port=port, debug=False, threaded=True)
+    except OSError as e:
+        if "Address already in use" in str(e) or "10048" in str(e):
+            fallback_port = 8080 if port != 8080 else 5001
+            print(f"[Warning] Port {port} in use. Starting on fallback port {fallback_port}...")
+            print(f"  Access at: http://{local_ip}:{fallback_port}")
+            app.run(host=host, port=fallback_port, debug=False, threaded=True)
+        else:
+            raise e
     except KeyboardInterrupt:
         pass
     finally:
