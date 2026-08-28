@@ -1,11 +1,10 @@
 """
 rtsp_manager.py
 ----------------
-USB Camera Manager with 1-Second 3-Frame Burst Extraction & Telemetry Engine.
-Manages USB webcam video stream, performs async 3-frame burst OCR with
-discrete consensus voting (no arithmetic averaging), maintains live telemetry states,
-handles reconnections, and outputs 100% accurate data to terminal & JSON.
-USB camera only - no RTSP support.
+RTSP Multi-Camera Manager & Real-Time Data Extraction Engine.
+Manages concurrent camera video streams, performs async OCR extraction,
+maintains live data states, handles stream reconnections, and provides
+synthetic camera fallbacks for testing.
 """
 
 import os
@@ -14,43 +13,59 @@ os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
 import time
 import json
 import threading
+import queue
 import random
 from datetime import datetime
 import cv2
 import numpy as np
 
-from src.ocr_extract import extract_image_data, auto_unwarp_screen, deskew_and_straighten
-from src.field_parser import (
-    parse_spatial_dialysis_fields,
-    parse_general_data,
-    consensus_vote_discrete,
-    print_results,
-    print_general_results,
-    load_field_config
-)
+from src.ocr_extract import extract_image_data
+from src.field_parser import parse_spatial_dialysis_fields, parse_general_data, print_results, print_general_results
 from src.black_box_extractor import extract_from_black_boxes
 from src.telemetry_normalizer import apply_temporal_smoothing
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
 DEVICES_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "devices.json")
 SAMPLE_IMG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dialysis_test.png")
 
-
-def load_master_config() -> dict:
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
-
-
-_GLOBAL_CFG = load_master_config()
+DEFAULT_DEVICES = [
+    {
+        "id": "0000200043",
+        "name": "Main Vault (Dialysis Screen)",
+        "ip": "127.0.0.1",
+        "rtsp_url": "rtsp://103.154.106.111:554/profile2",
+        "mode": "dialysis",
+        "status": "Online",
+        "fps": 25,
+        "extraction_interval": 1.5,
+        "show_boxes": True
+    },
+    {
+        "id": "0000200044",
+        "name": "ICU Monitor Bay 2",
+        "ip": "192.168.1.102",
+        "rtsp_url": "synthetic://dialysis_2",
+        "mode": "dialysis",
+        "status": "Online",
+        "fps": 25,
+        "extraction_interval": 2.0,
+        "show_boxes": True
+    },
+    {
+        "id": "0000200045",
+        "name": "Lab Camera (Webcam #0)",
+        "ip": "192.168.1.105",
+        "rtsp_url": "0",
+        "mode": "dialysis",
+        "status": "Online",
+        "fps": 30,
+        "extraction_interval": 2.0,
+        "show_boxes": True
+    }
+]
 
 
 class CameraWorker:
-    """Worker thread per camera stream with 1-second 3-frame burst OCR."""
+    """Worker thread per RTSP camera stream."""
 
     def __init__(self, device_config: dict):
         self.config = device_config
@@ -58,8 +73,7 @@ class CameraWorker:
         self.name = device_config.get("name", f"Camera-{self.device_id}")
         self.rtsp_url = str(device_config.get("rtsp_url", "0")).strip()
         self.mode = device_config.get("mode", "dialysis")
-        self.extraction_interval = float(device_config.get("extraction_interval", 1.0))
-        self.burst_count = int(device_config.get("burst_count", 3))
+        self.extraction_interval = float(device_config.get("extraction_interval", 1.5))
         self.show_boxes = device_config.get("show_boxes", True)
 
         self.running = False
@@ -73,6 +87,8 @@ class CameraWorker:
         self.last_ocr_duration = 0
         self.ocr_busy = False
 
+        # Latest extracted data
+
         self.extracted_data = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "mode": self.mode,
@@ -81,23 +97,30 @@ class CameraWorker:
             "numbers_found": [],
             "key_value_pairs": {},
             "boxes": [],
-            "confidence": 1.00
+            "confidence": 0.95
         }
 
+        # Rolling pressure history for charts
         self.pressure_history = {
             "art_pressure": [-150, -160, -155, -165, -170, -162, -158, -164, -160, -152],
             "ven_pressure": [-290, -295, -292, -288, -290, -294, -291, -289, -292, -290],
             "timestamps": [f"{i}:00" for i in range(10)]
         }
 
+        # Initialize base synthetic frame if needed
         self.base_synthetic = self._load_synthetic_base()
         self.current_frame = self.base_synthetic.copy()
         self.annotated_frame = self.base_synthetic.copy()
         self.sim_tick = 0
 
     def _load_synthetic_base(self):
+        if os.path.exists(SAMPLE_IMG_PATH):
+            img = cv2.imread(SAMPLE_IMG_PATH)
+            if img is not None:
+                return img
+        # Create fallback dark frame
         img = np.zeros((720, 1280, 3), dtype=np.uint8)
-        cv2.putText(img, "USB CAMERA CONNECTING...", (380, 360), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 200, 255), 2)
+        cv2.putText(img, "RTSP CAMERA FEED", (400, 360), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)
         return img
 
     def start(self):
@@ -112,141 +135,208 @@ class CameraWorker:
             self.thread.join(timeout=1.0)
 
     def _generate_synthetic_frame(self) -> np.ndarray:
-        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cv2.putText(frame, "USB CAMERA OFFLINE / CONNECTING...", (320, 340), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 165, 255), 2)
-        cv2.putText(frame, f"Checking camera index #{self.rtsp_url} - {now_str}", (340, 390), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 180, 180), 1)
-        return frame
+        """Generates dynamic live camera stream of dialysis monitor with ticking clock & realistic variation."""
+        frame = self.base_synthetic.copy()
+        self.sim_tick += 1
+
+        # Draw RTSP timestamp overlay on top-left of camera frame matching input_file_0.png
+        now_str = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+        ipc_text = f"IPC  {now_str}"
+        cv2.putText(frame, ipc_text, (25, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (240, 240, 240), 2, cv2.LINE_AA)
+
+        # Subtle noise / lighting shimmer to simulate real camera feed
+        noise = np.random.randint(-3, 4, frame.shape, dtype=np.int16)
+        frame_noisy = np.clip(frame.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        return frame_noisy
 
     def _worker_loop(self):
-        from src.capture import open_camera
-        cam_id = int(self.rtsp_url) if self.rtsp_url.isdigit() else 0
-        cap = open_camera(camera_index=cam_id, width=1280, height=720)
+        cap = None
+        is_synthetic = False
+        is_webcam = self.rtsp_url.isdigit()
 
-        if cap and cap.isOpened():
-            self.status = "Online (USB Camera)"
+        # Determine stream source
+        if self.rtsp_url.startswith("synthetic://"):
+            is_synthetic = True
+            self.status = "Online (Simulated)"
         else:
-            self.status = "Connecting USB Camera..."
+            try:
+                if is_webcam:
+                    cam_id = int(self.rtsp_url)
+                    import sys
+                    backend = cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY
+                    cap = cv2.VideoCapture(cam_id, backend)
+                    if not cap or not cap.isOpened():
+                        cap = cv2.VideoCapture(cam_id)
+                else:
+                    cam_id = self.rtsp_url
+                    cap = cv2.VideoCapture(cam_id)
 
-        last_reconnect_time = time.time()
-        burst_buffer = []
+                if cap and cap.isOpened():
+                    self.status = "Online (Live Webcam)" if is_webcam else "Online (RTSP Stream)"
+                else:
+                    if not is_webcam:
+                        is_synthetic = True
+                        self.status = "Online (Simulated RTSP)"
+                    else:
+                        self.status = "Connecting Webcam..."
+            except BaseException:
+                if not is_webcam:
+                    is_synthetic = True
+                    self.status = "Online (Simulated RTSP)"
+
+        reconnect_attempts = 0
+        last_reconnect_time = 0
 
         while self.running:
             raw_frame = None
 
-            # Reconnection check if cap is closed
-            if cap is None or not cap.isOpened():
-                now = time.time()
-                if now - last_reconnect_time >= 1.0:
-                    last_reconnect_time = now
+            # Continuous re-open loop for physical USB webcams
+            if is_webcam and (cap is None or not cap.isOpened()):
+                now_rec = time.time()
+                if now_rec - last_reconnect_time >= 2.0:
+                    last_reconnect_time = now_rec
                     try:
-                        cap = open_camera(camera_index=cam_id, width=1280, height=720)
+                        cam_id = int(self.rtsp_url)
+                        import sys
+                        backend = cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY
+                        cap = cv2.VideoCapture(cam_id, backend)
+                        if not cap or not cap.isOpened():
+                            cap = cv2.VideoCapture(cam_id)
                         if cap and cap.isOpened():
-                            self.status = "Online (USB Camera)"
+                            self.status = "Online (Live Webcam)"
                     except Exception:
-                        cap = None
+                        pass
 
-            if cap is not None and cap.isOpened():
+            if not is_synthetic and cap is not None and cap.isOpened():
                 try:
                     ret, frame = cap.read()
                     if ret and frame is not None and frame.size > 0:
                         raw_frame = frame
-                        self.status = "Online (USB Camera)"
+                        reconnect_attempts = 0
+                        self.status = "Online (Live Webcam)" if is_webcam else "Online (RTSP Stream)"
                     else:
-                        time.sleep(0.02)
+                        reconnect_attempts += 1
+                        time.sleep(0.05)
+                        if reconnect_attempts >= 60:
+                            if not is_webcam:
+                                is_synthetic = True
+                                self.status = "Online (Fallback Stream)"
+                            else:
+                                try:
+                                    cap.release()
+                                except Exception:
+                                    pass
+                                cap = None
+                                reconnect_attempts = 0
                 except Exception:
-                    try:
-                        cap.release()
-                    except Exception:
-                        pass
-                    cap = None
+                    reconnect_attempts += 1
+                    time.sleep(0.05)
 
             if raw_frame is None:
                 raw_frame = self._generate_synthetic_frame()
 
-            burst_buffer.append(raw_frame.copy())
-            if len(burst_buffer) > self.burst_count:
-                burst_buffer.pop(0)
-
+            # Watermark header and bottom footer matching input_file_0.png
             annotated = raw_frame.copy()
             h, w = annotated.shape[:2]
+            
+            # Bottom status banner
             cv2.rectangle(annotated, (0, h - 25), (w, h), (15, 18, 24), -1)
-            cv2.putText(annotated, f"Live Telemetry - {self.name} [{self.device_id}]", (w // 2 - 140, h - 7),
+            cv2.putText(annotated, f"Live (Stream) - {self.name} [{self.device_id}]", (w // 2 - 140, h - 7),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
 
             with self.lock:
                 self.current_frame = raw_frame
                 self.annotated_frame = annotated
 
+            # Perform non-blocking OCR extraction if interval elapsed
             now = time.time()
             if not self.ocr_busy and (now - self.last_extraction_time >= self.extraction_interval):
                 self.last_extraction_time = now
                 self.ocr_busy = True
-                frames_to_process = list(burst_buffer) if len(burst_buffer) >= 2 else [raw_frame.copy()] * self.burst_count
-                threading.Thread(target=self._async_burst_ocr_task, args=(frames_to_process,), daemon=True).start()
+                ocr_frame = raw_frame.copy()
+                threading.Thread(target=self._async_ocr_task, args=(ocr_frame,), daemon=True).start()
 
-            time.sleep(0.033)
+            time.sleep(0.033)  # Smooth 30 FPS video feed
 
         if cap is not None:
             cap.release()
 
-    def _async_burst_ocr_task(self, burst_frames: list):
+    def _async_ocr_task(self, frame: np.ndarray):
+        """Asynchronous background OCR task wrapper."""
         try:
-            self.run_burst_ocr_extraction(burst_frames)
+            self.run_ocr_extraction(frame)
         finally:
             self.ocr_busy = False
 
-    def run_burst_ocr_extraction(self, burst_frames: list = None):
-        """
-        Runs 3-frame burst OCR with tilt unwarping and discrete consensus voting (NO AVERAGING).
-        """
-        if not burst_frames:
+
+    def run_ocr_extraction(self, frame: np.ndarray = None):
+        """Runs OCR extraction pipeline on target frame."""
+        if frame is None:
             with self.lock:
-                current = self.current_frame if self.current_frame is not None else self.base_synthetic
-                burst_frames = [current.copy()] * self.burst_count
+                frame = self.current_frame if self.current_frame is not None else self.base_synthetic
+
+        if frame is None:
+            return
 
         t0 = time.time()
         try:
             if self.mode == "dialysis":
-                fields_per_frame = []
-                last_lines_data = []
+                print(f"[LIVE OCR] Starting frame extraction for '{self.name}' ...", flush=True)
+                
+                # 1. Run full-frame OCR (extracts text lines and spatial grid fields)
+                lines_data = extract_image_data(frame, engine="auto")
+                spatial_fields = parse_spatial_dialysis_fields(lines_data)
+                
+                # 2. Run black-box LCD detector (extracts numbers from dark boxes)
+                bb_fields = extract_from_black_boxes(frame)
+                
+                # 3. Hybrid Merge: Ensure ALL 10 fields are populated seamlessly
+                fields = {}
+                all_canonical_fields = [
+                    "UF Volume", "UF Time Left", "UF Rate", "UF Goal",
+                    "Eff. Blood Flow", "Cum. Blood Vol.", "Kt/V", "Plasma Na",
+                    "Goal in", "Clearance"
+                ]
+                
+                for fname in all_canonical_fields:
+                    # Prefer Direct Label-Anchor spatial field if detected, else fallback to black-box detector
+                    if fname in spatial_fields and spatial_fields[fname].get("value"):
+                        fields[fname] = spatial_fields[fname]
+                    elif fname in bb_fields and bb_fields[fname].get("value"):
+                        fields[fname] = bb_fields[fname]
+                    elif fname in spatial_fields:
+                        fields[fname] = spatial_fields[fname]
+                    elif fname in bb_fields:
+                        fields[fname] = bb_fields[fname]
 
-                from src.screen_extractor import extract_fields
+                # 4. Domain Normalization & Temporal Smoothing (Majority Voting across live frames)
+                fields = apply_temporal_smoothing(self.device_id, fields)
 
-                # Process each frame in the 3-frame burst using unified extractor
-                for idx, frame in enumerate(burst_frames):
-                    frame_fields = extract_fields(frame, engine="auto")
-                    fields_per_frame.append(frame_fields)
+                parsed_gen = parse_general_data(lines_data)
 
-                # Only run spatial OCR on last frame for raw text metadata
-                last_lines_data = extract_image_data(burst_frames[-1], engine="auto", unwarp=True)
-
-                # 2. Multi-Frame Discrete Consensus Voting (NO ARITHMETIC AVERAGING)
-                consensus_fields = consensus_vote_discrete(fields_per_frame)
-
-                # 3. Latching Memory & Temporal Smoothing
-                final_fields = apply_temporal_smoothing(self.device_id, consensus_fields)
-
-                parsed_gen = parse_general_data(last_lines_data)
-
-                # Pressure history
-                art_val = -160 + random.randint(-4, 4)
-                ven_val = -290 + random.randint(-3, 3)
-
+                # Format pressure point update for chart
+                art_val = -160 + random.randint(-5, 5)
+                ven_val = -290 + random.randint(-4, 4)
+                
                 with self.lock:
                     self.pressure_history["art_pressure"].append(art_val)
                     self.pressure_history["ven_pressure"].append(ven_val)
                     self.pressure_history["timestamps"].append(datetime.now().strftime("%H:%M:%S"))
+
                     if len(self.pressure_history["art_pressure"]) > 20:
                         self.pressure_history["art_pressure"].pop(0)
                         self.pressure_history["ven_pressure"].pop(0)
                         self.pressure_history["timestamps"].pop(0)
 
+                    boxes = [item.get("bbox") for item in lines_data if "bbox" in item]
+
+                    # Build clean key_value_pairs dictionary from extracted fields
                     kv_pairs = {}
-                    for fname, fval in final_fields.items():
-                        if fval and fval.get("value") is not None:
-                            u_str = fval.get("unit", "")
-                            kv_pairs[fname] = f"{fval['value']} {u_str}".strip() if u_str else str(fval['value'])
+                    if fields:
+                        for fname, fval in fields.items():
+                            if fval and fval.get("value") is not None:
+                                u_str = fval.get("unit", "")
+                                kv_pairs[fname] = f"{fval['value']} {u_str}".strip() if u_str else str(fval['value'])
 
                     self.extracted_data = {
                         "device_id": self.device_id,
@@ -254,30 +344,37 @@ class CameraWorker:
                         "rtsp_url": self.rtsp_url,
                         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "mode": "dialysis",
-                        "burst_frames_analyzed": len(burst_frames),
-                        "fields": final_fields,
+                        "fields": fields,
                         "raw_text": parsed_gen.get("raw_text", ""),
                         "numbers_found": parsed_gen.get("numbers_found", []),
                         "key_value_pairs": kv_pairs,
-                        "confidence": 1.00,
+                        "boxes_count": len(boxes),
+                        "confidence": 0.96,
                         "pressure_history": self.pressure_history
                     }
 
-                    # Real-time console output
-                    print_results(final_fields, title=f"LIVE TELEMETRY - {self.name} [{self.device_id}] (100% DISCRETE)")
+                    # Print Real-Time Extracted Telemetry to Console
+                    print(f"\n=================================================================")
+                    print(f"[RTSP LIVE OCR] Camera: '{self.name}' (ID: {self.device_id})")
+                    print(f"[RTSP LIVE OCR] Time  : {self.extracted_data['timestamp']}")
+                    print(f"[RTSP LIVE OCR] Extracted Parameters:")
+                    for k, v in kv_pairs.items():
+                        print(f"   • {k:<16}: {v}")
+                    print(f"=================================================================\n")
 
-                    # Persist telemetry JSON
+                    # Persist Live Telemetry to JSON file on disk
                     try:
                         output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
                         os.makedirs(output_dir, exist_ok=True)
                         live_json_path = os.path.join(output_dir, f"live_telemetry_{self.device_id}.json")
                         with open(live_json_path, "w", encoding="utf-8") as f:
                             json.dump(self.extracted_data, f, indent=2)
-                    except Exception:
-                        pass
+                    except Exception as json_err:
+                        print(f"Telemetry save error: {json_err}")
             else:
-                lines_data = extract_image_data(burst_frames[0], engine="auto")
+                lines_data = extract_image_data(frame, engine="auto")
                 parsed_gen = parse_general_data(lines_data)
+
                 with self.lock:
                     self.extracted_data = {
                         "device_id": self.device_id,
@@ -290,16 +387,12 @@ class CameraWorker:
                         "key_value_pairs": parsed_gen.get("key_value_pairs", {}),
                         "numbers_found": parsed_gen.get("numbers_found", []),
                         "raw_text": parsed_gen.get("raw_text", ""),
-                        "confidence": 0.95
+                        "confidence": 0.90
                     }
         except Exception as err:
-            print(f"[RTSP Engine Error] Device {self.device_id}: {err}", flush=True)
+            print(f"OCR Extraction Exception on device {self.device_id}: {err}")
 
         self.last_ocr_duration = round(time.time() - t0, 3)
-
-    def run_ocr_extraction(self, frame: np.ndarray = None):
-        burst = [frame] * self.burst_count if frame is not None else None
-        self.run_burst_ocr_extraction(burst)
 
     def get_jpeg_frame(self, annotate: bool = True) -> bytes:
         with self.lock:
@@ -326,6 +419,7 @@ class CameraWorker:
             return data
 
     def capture_and_save(self) -> dict:
+        """Captures active high-res frame, runs OCR extraction, saves PNG & JSON files to output/."""
         with self.lock:
             frame = self.current_frame.copy() if self.current_frame is not None else self.base_synthetic.copy()
 
@@ -335,13 +429,18 @@ class CameraWorker:
 
         img_filename = f"capture_{ts}.png"
         json_filename = f"scraped_data_{ts}.json"
+
         img_path = os.path.join(output_dir, img_filename)
         json_path = os.path.join(output_dir, json_filename)
 
+        # Save clean image frame to disk
         cv2.imwrite(img_path, frame)
-        self.run_burst_ocr_extraction([frame] * self.burst_count)
+
+        # Run extraction
+        self.run_ocr_extraction(frame)
         data = self.get_data()
 
+        # Save JSON payload
         save_payload = {
             "device_id": self.device_id,
             "device_name": self.name,
@@ -357,15 +456,29 @@ class CameraWorker:
             "key_value_pairs": data.get("key_value_pairs", {}),
             "numbers_found": data.get("numbers_found", []),
             "raw_text": data.get("raw_text", ""),
-            "confidence": 1.00,
+            "confidence": data.get("confidence", 0.95),
             "ocr_duration": data.get("ocr_duration", 0.1)
         }
 
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(save_payload, f, indent=2, ensure_ascii=False)
 
+        # Print extracted data & JSON directly to terminal console
+        print("\n" + "=" * 65)
+        print(f" 📸 CAPTURE SAVED & EXTRACTED DATA [{self.name} - ID: {self.device_id}]".center(65))
+        print(f" Image: output/{img_filename} | JSON: output/{json_filename}".center(65))
+        print("=" * 65)
+        if save_payload.get("fields"):
+            print_results(save_payload["fields"])
+        elif save_payload.get("key_value_pairs") or save_payload.get("numbers_found"):
+            print_general_results({"lines": [], "key_value_pairs": save_payload.get("key_value_pairs", {}), "numbers_found": save_payload.get("numbers_found", [])}, source_label=self.name)
+        print("\n--- JSON OUTPUT ---")
+        print(json.dumps(save_payload, indent=2))
+        print("=" * 65 + "\n")
+
         save_payload["saved_status"] = True
         return save_payload
+
 
 
 class RTSPStreamManager:
@@ -383,18 +496,7 @@ class RTSPStreamManager:
                     return json.load(f)
             except Exception:
                 pass
-        return _GLOBAL_CFG.get("devices", [
-            {
-                "id": "001",
-                "name": "Raspberry Pi 4 Camera",
-                "ip": "127.0.0.1",
-                "rtsp_url": "0",
-                "mode": "dialysis",
-                "extraction_interval": 1.0,
-                "burst_count": 3,
-                "show_boxes": True
-            }
-        ])
+        return DEFAULT_DEVICES
 
     def _save_devices_config(self):
         try:
@@ -435,14 +537,13 @@ class RTSPStreamManager:
         return None
 
     def add_device(self, new_config: dict) -> dict:
-        dev_id = new_config.get("id") or f"{random.randint(100, 999)}"
+        dev_id = new_config.get("id") or f"{random.randint(1000000000, 9999999999)}"
         new_config["id"] = dev_id
         new_config.setdefault("name", f"Camera {dev_id}")
         new_config.setdefault("ip", "127.0.0.1")
-        new_config.setdefault("rtsp_url", "0")
+        new_config.setdefault("rtsp_url", "synthetic://dialysis")
         new_config.setdefault("mode", "dialysis")
-        new_config.setdefault("extraction_interval", 1.0)
-        new_config.setdefault("burst_count", 3)
+        new_config.setdefault("extraction_interval", 1.5)
 
         self.devices_config.append(new_config)
         self._save_devices_config()
@@ -459,6 +560,7 @@ class RTSPStreamManager:
                 self.devices_config[idx] = cfg
                 self._save_devices_config()
 
+                # Restart worker with new config
                 if device_id in self.workers:
                     self.workers[device_id].stop()
                 worker = CameraWorker(cfg)
@@ -491,7 +593,7 @@ class RTSPStreamManager:
     def force_extract(self, device_id: str) -> dict:
         worker = self.workers.get(device_id)
         if worker:
-            worker.run_burst_ocr_extraction()
+            worker.run_ocr_extraction()
             return worker.get_data()
         return {}
 
@@ -501,12 +603,7 @@ class RTSPStreamManager:
             return worker.capture_and_save()
         return {}
 
-    def stop_all(self):
-        for worker in self.workers.values():
-            try:
-                worker.stop()
-            except Exception:
-                pass
 
 
+# Global instance singleton
 rtsp_manager = RTSPStreamManager()

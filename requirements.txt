@@ -6,4 +6,5 @@ python-multipart
 opencv-python
 pytesseract
 numpy
+easyocr
 Pillow

@@ -1,115 +1,27 @@
 """
 capture.py
 ----------
-Camera capture module for Raspberry Pi 4 Model B, Linux, and Windows systems.
-Supports:
-  1. High-speed 3-frame burst capture per second (V4L2 / DirectShow / MJPEG)
-  2. Raspberry Pi 4 USB webcams & CSI camera module support with auto-fallback
-  3. Continuous 1-second interval telemetry collection loop
-  4. Central JSON configuration integration
+Captures live frames or continuous video streams from a webcam device
+for image data scraping.
 """
 
 import cv2
 import numpy as np
 import time
 import sys
-import os
-import json
-
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
-SAMPLE_IMG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dialysis_test.png")
-
-
-def load_config() -> dict:
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
-
-
-_CONFIG = load_config()
-
-
-def _get_fallback_frame() -> np.ndarray:
-    """Provides a sample dialysis screen frame if camera hardware is unavailable."""
-    if os.path.exists(SAMPLE_IMG_PATH):
-        img = cv2.imread(SAMPLE_IMG_PATH)
-        if img is not None:
-            return img
-
-    output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
-    if os.path.exists(output_dir):
-        for fname in sorted(os.listdir(output_dir), reverse=True):
-            if fname.startswith("capture_") and fname.endswith(".png"):
-                img = cv2.imread(os.path.join(output_dir, fname))
-                if img is not None:
-                    return img
-
-    blank = np.zeros((720, 1280, 3), dtype=np.uint8)
-    cv2.putText(blank, "RASPBERRY PI CAMERA FEED", (350, 360), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-    return blank
-
-
-def open_camera(camera_index: int = 0, width: int = 1280, height: int = 720) -> cv2.VideoCapture:
-    """
-    Opens camera device with hardware-optimized backend (V4L2 for Raspberry Pi 4).
-    Configures resolution and buffer size to eliminate latency.
-    """
-    cap = None
-    platform = sys.platform.lower()
-
-    # Try V4L2 first on Linux / Raspberry Pi
-    if platform.startswith("linux"):
-        try:
-            cap = cv2.VideoCapture(camera_index, cv2.CAP_V4L2)
-        except Exception:
-            cap = None
-
-    if cap is None or not cap.isOpened():
-        backend = cv2.CAP_DSHOW if platform.startswith("win") else cv2.CAP_ANY
-        try:
-            cap = cv2.VideoCapture(camera_index, backend)
-        except Exception:
-            cap = None
-
-    if cap is None or not cap.isOpened():
-        try:
-            cap = cv2.VideoCapture(camera_index)
-        except Exception:
-            pass
-
-    if cap is not None and cap.isOpened():
-        try:
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        except Exception:
-            pass
-        return cap
-
-    return None
 
 
 def discover_camera_details(max_tested: int = 5) -> list:
-    """Detect available camera hardware devices and return metadata."""
+    """Detect available hardware camera devices and return rich metadata."""
     cameras = []
-    platform = sys.platform.lower()
-    backend = cv2.CAP_V4L2 if platform.startswith("linux") else (cv2.CAP_DSHOW if platform.startswith("win") else cv2.CAP_ANY)
-
     for idx in range(max_tested):
         try:
-            cap = cv2.VideoCapture(idx, backend)
-            if not cap.isOpened():
-                cap = cv2.VideoCapture(idx)
+            cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY)
             if cap.isOpened():
                 ret, frame = cap.read()
-                if ret and frame is not None and frame.size > 0:
+                if ret and frame is not None:
                     h, w = frame.shape[:2]
-                    label = "Raspberry Pi Camera / Primary Webcam" if idx == 0 else f"Camera Device #{idx}"
+                    label = "Laptop Built-in Webcam" if idx == 0 else f"Attached USB Camera #{idx}"
                     cameras.append({
                         "index": idx,
                         "id": str(idx),
@@ -125,57 +37,44 @@ def discover_camera_details(max_tested: int = 5) -> list:
 
 
 def find_available_cameras(max_tested: int = 5) -> list:
+    """Detect available camera indices connected to system."""
     cams = discover_camera_details(max_tested)
     return [c["index"] for c in cams] if cams else [0]
 
 
-def capture_burst_frames(cap: cv2.VideoCapture, num_frames: int = 3, burst_delay: float = 0.05) -> list:
+
+def capture_from_webcam(camera_index: int = 0, num_frames: int = 1) -> list:
     """
-    Grabs a burst of `num_frames` (default: 3) in rapid succession.
-    Returns valid frames or fallback frame if camera is unavailable.
+    Opens an interactive webcam GUI window.
+    When SPACE/c is pressed, captures 1 crisp HD frame for instant high-speed OCR.
     """
-    frames = []
-    if cap is not None and cap.isOpened():
-        for _ in range(num_frames):
-            ret, frame = cap.read()
-            if ret and frame is not None and frame.size > 0:
-                # Check that frame is not completely dark/empty
-                if np.mean(frame) > 3.0:
-                    frames.append(frame)
-            if burst_delay > 0:
-                time.sleep(burst_delay)
+    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY)
+    if not cap.isOpened():
+        cap = cv2.VideoCapture(camera_index)
 
-    if not frames:
-        fallback = _get_fallback_frame()
-        frames = [fallback.copy() for _ in range(num_frames)]
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open webcam at index {camera_index}. Check camera connection.")
 
-    return frames
-
-
-def capture_from_webcam(camera_index: int = 0, num_frames: int = 3) -> list:
-    """Interactive preview window for capturing a 3-frame burst."""
-    cap = open_camera(camera_index)
-    if cap is None or not cap.isOpened():
-        print(f"[Warning] Camera #{camera_index} not accessible. Using test frame fallback.")
-        return [_get_fallback_frame() for _ in range(num_frames)]
+    # Request HD 1080p resolution for high OCR clarity with MJPG codec
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
 
     window_name = "Webcam Extractor - [SPACE/C] Capture 3-Frame Burst | [Q] Quit"
-    try:
-        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(window_name, 800, 600)
-    except Exception:
-        pass
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, 800, 600)
 
     print("\nWebcam preview active.")
-    print(" -> Press 'SPACE' or 'c' to CAPTURE a 3-frame burst for 100% accuracy.")
+    print(" -> Press 'SPACE' or 'c' to CAPTURE a 3-frame burst for maximum accuracy.")
     print(" -> Press 'q' or 'ESC' to cancel.\n")
 
     captured_frames = []
     try:
         while True:
             ret, live_frame = cap.read()
-            if not ret or live_frame is None:
-                time.sleep(0.05)
+            if not ret:
+                print("Warning: Failed to read frame from webcam.")
+                time.sleep(0.1)
                 continue
 
             display_frame = live_frame.copy()
@@ -184,7 +83,7 @@ def capture_from_webcam(camera_index: int = 0, num_frames: int = 3) -> list:
             cv2.rectangle(display_frame, (0, 0), (w, 40), (20, 20, 20), -1)
             cv2.putText(
                 display_frame,
-                f"Press 'SPACE' to Capture {num_frames}-Frame Burst | 'q' to Quit",
+                "Press 'SPACE' / 'c' to CAPTURE (3-Frame Burst) | Press 'q' to QUIT",
                 (15, 26),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
@@ -192,87 +91,125 @@ def capture_from_webcam(camera_index: int = 0, num_frames: int = 3) -> list:
                 2,
             )
 
-            try:
-                cv2.imshow(window_name, display_frame)
-                key = cv2.waitKey(20) & 0xFF
-            except Exception:
-                key = ord('c')
+            cv2.imshow(window_name, display_frame)
+            key = cv2.waitKey(20) & 0xFF
 
-            if key in (ord('c'), ord('C'), 32):
-                print(f"Capturing {num_frames}-frame burst...")
-                captured_frames = capture_burst_frames(cap, num_frames=num_frames, burst_delay=0.08)
+            if key in (ord('c'), ord('C'), 32):  # 'c' or SPACE
+                print(f"Capturing {num_frames} frames over 1.5 seconds for multi-frame accuracy...")
+                for idx in range(num_frames):
+                    ret_b, burst_frame = cap.read()
+                    if ret_b and burst_frame is not None:
+                        captured_frames.append(burst_frame)
+
+                        # Flash progress overlay
+                        flash_frame = burst_frame.copy()
+                        cv2.rectangle(flash_frame, (0, 0), (w, 50), (0, 165, 255), -1)
+                        cv2.putText(
+                            flash_frame,
+                            f"CAPTURING FRAME {idx+1}/{num_frames} - HOLD STILL...",
+                            (15, 33),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            (255, 255, 255),
+                            2,
+                        )
+                        cv2.imshow(window_name, flash_frame)
+                        cv2.waitKey(400)
+                print(f"Successfully captured {len(captured_frames)} burst frames!")
                 break
-            elif key in (ord('q'), ord('Q'), 27):
-                print("Webcam capture cancelled.")
+            elif key in (ord('q'), ord('Q'), 27):  # 'q' or ESC
+                print("Webcam capture cancelled by user.")
                 break
     finally:
         cap.release()
-        try:
-            cv2.destroyAllWindows()
-        except Exception:
-            pass
+        cv2.destroyAllWindows()
 
-    return captured_frames if captured_frames else [_get_fallback_frame() for _ in range(num_frames)]
+    return captured_frames if captured_frames else []
 
 
-def capture_headless(camera_index: int = 0, num_frames: int = 3, warmup_frames: int = 10) -> list:
-    """Non-interactive automatic 3-frame burst capture."""
-    cap = open_camera(camera_index)
-    if cap is None or not cap.isOpened():
-        print(f"[Notice] Camera #{camera_index} not opened. Using fallback stream frame.")
-        return [_get_fallback_frame() for _ in range(num_frames)]
+def capture_headless(camera_index: int = 0, num_frames: int = 3, warmup_frames: int = 15) -> list:
+    """
+    Non-interactive automatic capture without GUI window.
+    Captures `num_frames` automatically in ~1.5 seconds.
+    """
+    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY)
+    if not cap.isOpened():
+        cap = cv2.VideoCapture(camera_index)
 
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open webcam at index {camera_index}")
+
+    frames = []
     try:
+        # Allow auto-exposure and auto-focus to settle
         for _ in range(warmup_frames):
             cap.read()
             time.sleep(0.03)
 
-        return capture_burst_frames(cap, num_frames=num_frames, burst_delay=0.08)
+        for _ in range(num_frames):
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                frames.append(frame)
+            time.sleep(0.5)
+
+        return frames
     finally:
         cap.release()
 
 
-def run_1sec_burst_collection_loop(camera_index: int = 0, process_burst_fn=None, interval: float = 1.0, num_frames: int = 3):
+def capture_live_stream(camera_index: int = 0, process_fn=None, frame_interval: float = 1.0):
     """
-    Continuous 1-second telemetry collection loop for Raspberry Pi 4 Model B.
-    Runs reliably without crashing.
+    Continuous live webcam scraping mode.
+    Runs OCR on webcam frames every `frame_interval` seconds and calls `process_fn(frame)`.
+    Press 'q' in the window to stop live streaming.
     """
-    cfg = load_config()
-    target_interval = cfg.get("app", {}).get("extraction_interval_seconds", interval)
-    burst_count = cfg.get("app", {}).get("burst_frame_count", num_frames)
-    burst_delay = cfg.get("app", {}).get("burst_delay_seconds", 0.05)
+    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY)
+    if not cap.isOpened():
+        cap = cv2.VideoCapture(camera_index)
 
-    print(f"\n" + "=" * 65)
-    print(f" STARTING 1-SECOND 3-FRAME BURST TELEMETRY ENGINE ")
-    print(f" Target Platform: Raspberry Pi 4 Model B / Linux / Multi-OS")
-    print(f" Cycle Interval : {target_interval} second(s)")
-    print(f" Burst Frames   : {burst_count} frames per cycle")
-    print(f" Press Ctrl+C in terminal to stop.")
-    print("=" * 65 + "\n")
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open webcam at index {camera_index}")
 
-    cap = open_camera(camera_index)
-    if cap is None or not cap.isOpened():
-        print(f"[Notice] Hardware camera #{camera_index} not responding. Utilizing auto-fallback feed.")
+    window_name = "Live Webcam Data Extractor - [Q] Stop Stream"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, 800, 600)
 
-    cycle_count = 0
+    print("\nStarting Live Webcam OCR Stream...")
+    print("Press 'q' or ESC in the preview window to exit live mode.\n")
+
+    last_process_time = 0.0
+
     try:
         while True:
-            t_start = time.time()
-            cycle_count += 1
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                time.sleep(0.05)
+                continue
 
-            # 1. Collect 3-frame burst
-            burst_frames = capture_burst_frames(cap, num_frames=burst_count, burst_delay=burst_delay)
+            current_time = time.time()
 
-            if burst_frames and process_burst_fn:
-                process_burst_fn(burst_frames, cycle_count=cycle_count)
+            # Run OCR callback periodically
+            if process_fn and (current_time - last_process_time >= frame_interval):
+                process_fn(frame)
+                last_process_time = current_time
 
-            # 2. Precision sleep to maintain exactly 1-second cadence
-            elapsed = time.time() - t_start
-            sleep_time = max(0.01, target_interval - elapsed)
-            time.sleep(sleep_time)
+            # Show live preview
+            display_frame = frame.copy()
+            cv2.putText(
+                display_frame,
+                "LIVE SCRAPING ACTIVE - Press 'q' to stop",
+                (15, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 0),
+                2,
+            )
+            cv2.imshow(window_name, display_frame)
 
-    except KeyboardInterrupt:
-        print("\n[LOOP] 1-Second Data Collection Loop stopped by user.")
+            key = cv2.waitKey(20) & 0xFF
+            if key in (ord('q'), ord('Q'), 27):
+                print("Live webcam stream stopped.")
+                break
     finally:
-        if cap is not None and cap.isOpened():
-            cap.release()
+        cap.release()
+        cv2.destroyAllWindows()
