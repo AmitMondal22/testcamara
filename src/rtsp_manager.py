@@ -22,6 +22,7 @@ import numpy as np
 from src.ocr_extract import extract_image_data
 from src.field_parser import parse_spatial_dialysis_fields, parse_general_data, print_results, print_general_results
 from src.black_box_extractor import extract_from_black_boxes
+from src.telemetry_normalizer import apply_temporal_smoothing
 
 DEVICES_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "devices.json")
 SAMPLE_IMG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dialysis_test.png")
@@ -298,15 +299,18 @@ class CameraWorker:
                 ]
                 
                 for fname in all_canonical_fields:
-                    # Prefer high-confidence black-box value if present, else fallback to spatial parser
-                    if fname in bb_fields and bb_fields[fname].get("value"):
-                        fields[fname] = bb_fields[fname]
-                    elif fname in spatial_fields and spatial_fields[fname].get("value"):
+                    # Prefer Direct Label-Anchor spatial field if detected, else fallback to black-box detector
+                    if fname in spatial_fields and spatial_fields[fname].get("value"):
                         fields[fname] = spatial_fields[fname]
-                    elif fname in bb_fields:
+                    elif fname in bb_fields and bb_fields[fname].get("value"):
                         fields[fname] = bb_fields[fname]
                     elif fname in spatial_fields:
                         fields[fname] = spatial_fields[fname]
+                    elif fname in bb_fields:
+                        fields[fname] = bb_fields[fname]
+
+                # 4. Domain Normalization & Temporal Smoothing (Majority Voting across live frames)
+                fields = apply_temporal_smoothing(self.device_id, fields)
 
                 parsed_gen = parse_general_data(lines_data)
 

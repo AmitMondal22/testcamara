@@ -181,19 +181,14 @@ def _ocr_box_value(frame: np.ndarray, x: int, y: int, w: int, h: int) -> str:
 
         text = re.sub(r"\s+", "", " ".join(r[1].strip() for r in results))
 
-        # Fix: D.DDD patterns where colon was read as dot and extra noise inserted
-        # e.g. '1.353' -> '1:53' (first digit + last 2 digits = h:mm)
-        m = re.match(r"^(\d)[\.:](\d+)$", text)
-        if m:
-            left, right = m.group(1), m.group(2)
-            # If right side has more than 2 digits and ends with valid minutes (00-59)
-            # OR right side is exactly 2 digits
-            mins = right[-2:]  # last 2 digits = minutes
-            if len(right) >= 2 and int(mins) <= 59:
-                text = f"{left}:{mins}"
-            elif len(right) == 2 and int(right) > 59:
-                # decimal like 0.84
-                text = f"{left}.{right}"
+        # 1. Decimal values starting with 0 (e.g. Kt/V 0.68, 0.61, 0.84, 0.11)
+        if text.startswith("0.") or text.startswith("0,"):
+            return text.replace(",", ".")
+
+        # 2. Time values starting with non-zero hour (e.g. 1.43 -> 1:43, 1.53 -> 1:53)
+        m_time = re.match(r"^([1-9])[\.:](\d{2})$", text)
+        if m_time:
+            text = f"{m_time.group(1)}:{m_time.group(2)}"
 
         cleaned = re.sub(r"[^0-9\.:]" , "", text)
         return cleaned if cleaned else ""
