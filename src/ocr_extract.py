@@ -1,31 +1,30 @@
 """
 ocr_extract.py
 --------------
-Dual-engine OCR processing module for image text & data extraction.
-Supports:
-  1. EasyOCR (PyTorch-based, runs completely in Python on Windows/Linux/macOS)
-  2. PyTesseract (with automatic Windows installation path discovery)
-
-Auto-selects the available engine so execution never crashes due to missing binaries.
+OCR extraction engine optimized for Raspberry Pi 4 Model B & multi-platform environments.
+Features:
+  1. Camera tilt deskewing & 4-point perspective unwarping (homography transform)
+  2. Dual-engine support: EasyOCR (PyTorch) and Tesseract OCR (with Pi 4 optimizations)
+  3. Image contrast enhancement (CLAHE + adaptive binarization)
+  4. Central JSON configuration integration
 """
 
 import os
 import sys
 import io
+import json
 import shutil
-
-# Ensure Windows OpenMP DLL compatibility for PyTorch/EasyOCR before OpenCV initialization
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-try:
-     # pyrefly: ignore [missing-import]
-    import torch
-except Exception:
-    pass
-
+import threading
 import cv2
 import numpy as np
 
-# Force UTF-8 encoding on standard output/error buffers to prevent Windows CP1252 charmap errors
+import warnings
+warnings.filterwarnings("ignore")
+
+# Prevent OpenMP runtime conflicts
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+# Force UTF-8 encoding on standard buffers
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -37,21 +36,38 @@ if hasattr(sys.stderr, "reconfigure"):
     except Exception:
         pass
 
-import threading
+# ─────────────────────────────────────────────────────────────
+# Central Configuration Loader
+# ─────────────────────────────────────────────────────────────
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
 
-# Global EasyOCR reader cache & thread safety lock
+
+def load_config() -> dict:
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+_CONFIG = load_config()
+
+# Global EasyOCR reader cache & lock
 _EASYOCR_READER = None
 _EASYOCR_LOCK = threading.Lock()
 
 
-def _configure_tesseract():
+def _configure_tesseract() -> bool:
     try:
-         # pyrefly: ignore [missing-import]
-        import pytesseract
+        import pytesseract  # pyrefly: ignore [missing-import]
         if shutil.which("tesseract"):
             return True
 
         common_paths = [
+            "/usr/bin/tesseract",
+            "/usr/local/bin/tesseract",
             r"C:\Program Files\Tesseract-OCR\tesseract.exe",
             r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
             os.path.expanduser(r"~\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"),
@@ -65,7 +81,23 @@ def _configure_tesseract():
     except ImportError:
         return False
 
+
 _HAS_TESSERACT = _configure_tesseract()
+
+
+def _get_easyocr_reader():
+    global _EASYOCR_READER
+    if _EASYOCR_READER is None:
+        with _EASYOCR_LOCK:
+            if _EASYOCR_READER is None:
+                try:
+                    import easyocr  # pyrefly: ignore [missing-import]
+                    gpu_setting = _CONFIG.get("ocr", {}).get("easyocr_gpu", False)
+                    _EASYOCR_READER = easyocr.Reader(['en'], gpu=gpu_setting, verbose=False)
+                except Exception as err:
+                    print(f"[OCR] EasyOCR initialization notice: {err}", flush=True)
+                    _EASYOCR_READER = None
+    return _EASYOCR_READER
 
 
 def load_image(path: str) -> np.ndarray:
@@ -79,71 +111,97 @@ def load_image(path: str) -> np.ndarray:
     return img
 
 
-def preprocess(img: np.ndarray, upscale: bool = True) -> np.ndarray:
+# ─────────────────────────────────────────────────────────────
+# Camera Tilt & Perspective Deskewing Algorithms
+# ─────────────────────────────────────────────────────────────
+
+def deskew_and_straighten(img: np.ndarray, max_angle: float = 45.0) -> np.ndarray:
     """
-    Clean up the image so OCR engines can read text/digits cleanly.
+    Detects rotational camera tilt using line orientation and minAreaRect,
+    then rotates the image to perfectly horizontal alignment (0 degrees).
     """
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    if img is None or img.size == 0:
+        return img
 
-    if upscale:
-        gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
 
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    gray = clahe.apply(gray)
+    # Use Hough Line Transform to detect dominant tilt angles
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=80, maxLineGap=10)
+    angles = []
 
-    denoised = cv2.fastNlMeansDenoising(gray, h=10)
+    if lines is not None:
+        for line in lines:
+            pts = line.reshape(-1)
+            if len(pts) >= 4:
+                x1, y1, x2, y2 = int(pts[0]), int(pts[1]), int(pts[2]), int(pts[3])
+                if x2 != x1:
+                    angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+                    if -max_angle <= angle <= max_angle and abs(angle) > 0.5:
+                        angles.append(angle)
 
-    thresh = cv2.adaptiveThreshold(
-        denoised, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        31, 15
-    )
-    return thresh
+    if angles:
+        median_angle = float(np.median(angles))
+        if abs(median_angle) > 0.5:
+            h, w = img.shape[:2]
+            center = (w // 2, h // 2)
+            rot_matrix = cv2.getRotationMatrix2D(center, median_angle, 1.0)
+            straightened = cv2.warpAffine(img, rot_matrix, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+            return straightened
 
-
-def _get_easyocr_reader():
-    global _EASYOCR_READER
-    if _EASYOCR_READER is None:
-        with _EASYOCR_LOCK:
-            if _EASYOCR_READER is None:
-                import easyocr
-                _EASYOCR_READER = easyocr.Reader(['en'], gpu=False, verbose=False)
-    return _EASYOCR_READER
+    return img
 
 
 def auto_unwarp_screen(img: np.ndarray) -> np.ndarray:
     """
-    Detects rectangular display screen contours and un-warps perspective
-    so tilted webcam images are flattened and deskewed before OCR.
+    Detects quadrilateral screen boundary contours and performs 4-point
+    perspective warp transform to rectify tilted, angled, or trapezoidal camera angles.
     """
     if img is None or img.size == 0:
         return img
 
     h_img, w_img = img.shape[:2]
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    deskew_cfg = _CONFIG.get("deskew_tilt", {})
+    min_area_ratio = deskew_cfg.get("min_contour_area_ratio", 0.08)
+    canny_low = deskew_cfg.get("canny_thresh_low", 30)
+    canny_high = deskew_cfg.get("canny_thresh_high", 150)
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edged = cv2.Canny(blurred, 30, 150)
+    edged = cv2.Canny(blurred, canny_low, canny_high)
+
+    # Dilate edges slightly to close small gaps
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    edged = cv2.dilate(edged, kernel, iterations=1)
 
     contours, _ = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:8]
 
     for c in contours:
+        area = cv2.contourArea(c)
+        if area < (min_area_ratio * w_img * h_img):
+            continue
+
         peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        if len(approx) == 4 and cv2.contourArea(c) > (0.15 * w_img * h_img):
-            pts = approx.reshape(4, 2)
+        approx = cv2.approxPolyDP(c, 0.025 * peri, True)
+
+        # Check for 4-corner polygon (quadrilateral)
+        if len(approx) == 4:
+            pts = approx.reshape(4, 2).astype("float32")
             rect = np.zeros((4, 2), dtype="float32")
 
+            # Top-left has smallest sum, bottom-right has largest sum
             s = pts.sum(axis=1)
             rect[0] = pts[np.argmin(s)]
             rect[2] = pts[np.argmax(s)]
 
+            # Top-right has smallest diff, bottom-left has largest diff
             diff = np.diff(pts, axis=1)
             rect[1] = pts[np.argmin(diff)]
             rect[3] = pts[np.argmax(diff)]
 
             (tl, tr, br, bl) = rect
+
             widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
             widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
             maxWidth = max(int(widthA), int(widthB))
@@ -163,128 +221,171 @@ def auto_unwarp_screen(img: np.ndarray) -> np.ndarray:
             ], dtype="float32")
 
             M = cv2.getPerspectiveTransform(rect, dst)
-            warped = cv2.warpPerspective(img, M, (maxWidth, maxHeight))
+            warped = cv2.warpPerspective(img, M, (maxWidth, maxHeight), flags=cv2.INTER_CUBIC)
             return warped
 
     return img
 
 
 def enhance_contrast(img: np.ndarray) -> np.ndarray:
-    """Enhance contrast for LCD screens using CLAHE."""
+    """Enhance LCD screen contrast using CLAHE (Contrast Limited Adaptive Histogram Equalization)."""
+    if img is None or img.size == 0:
+        return img
+
+    clip_limit = _CONFIG.get("deskew_tilt", {}).get("clahe_clip_limit", 3.0)
+    grid_size = tuple(_CONFIG.get("deskew_tilt", {}).get("clahe_tile_grid_size", [8, 8]))
+
     if len(img.shape) == 3:
         lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=grid_size)
         cl = clahe.apply(l)
         limg = cv2.merge((cl, a, b))
         return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
     else:
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=grid_size)
         return clahe.apply(img)
 
 
-def extract_image_data(img: np.ndarray, engine: str = "auto", unwarp: bool = False) -> list:
+def preprocess_for_pi4(img: np.ndarray, max_dim: int = 800) -> tuple:
     """
-    Scrapes text & numeric entries with double-pass OCR (Raw RGB + Otsu Binarized) for LCD displays.
+    Downscales frame safely to optimize Pi 4 CPU speed while preserving digit fidelity.
+    Returns (processed_image, scale_factor).
+    """
+    h_orig, w_orig = img.shape[:2]
+    largest = max(h_orig, w_orig)
+    if largest > max_dim:
+        scale = max_dim / float(largest)
+        resized = cv2.resize(img, (int(w_orig * scale), int(h_orig * scale)), interpolation=cv2.INTER_AREA)
+        return resized, scale
+    return img, 1.0
+
+
+# ─────────────────────────────────────────────────────────────
+# Primary OCR Extraction Function
+# ─────────────────────────────────────────────────────────────
+
+def extract_image_data(img: np.ndarray, engine: str = "auto", unwarp: bool = True) -> list:
+    """
+    Extracts text & numeric bounding boxes with camera tilt compensation and deskewing.
+    Optimized for Raspberry Pi 4 CPU and cross-platform setups.
     """
     if img is None or img.size == 0:
         return []
 
-    lines = []
-    h_orig, w_orig = img.shape[:2]
-    max_dim = max(h_orig, w_orig)
-    if max_dim > 1000:
-        scale_factor = 1000.0 / max_dim
-        scaled_img = cv2.resize(img, (int(w_orig * scale_factor), int(h_orig * scale_factor)), interpolation=cv2.INTER_AREA)
-    else:
-        scale_factor = 1.0
-        scaled_img = img
+    # 1. Camera Tilt & Perspective Compensation
+    deskew_cfg = _CONFIG.get("deskew_tilt", {})
+    processed_frame = img.copy()
 
+    if unwarp and deskew_cfg.get("enable_auto_unwarp", True):
+        processed_frame = auto_unwarp_screen(processed_frame)
+
+    if deskew_cfg.get("enable_tilt_deskew", True):
+        processed_frame = deskew_and_straighten(processed_frame, max_angle=deskew_cfg.get("max_tilt_angle_deg", 45.0))
+
+    # 2. Contrast Enhancement for LCD Displays
+    enhanced = enhance_contrast(processed_frame)
+
+    # 3. Pi 4 Dimension Scaling
+    max_dim = _CONFIG.get("ocr", {}).get("max_ocr_dimension", 800)
+    scaled_img, scale_factor = preprocess_for_pi4(enhanced, max_dim=max_dim)
+
+    # 4. Determine OCR Engine
     use_easyocr = (engine == "easyocr")
     if engine == "auto":
-        use_easyocr = not _HAS_TESSERACT
+        config_engine = _CONFIG.get("ocr", {}).get("engine", "auto")
+        if config_engine == "tesseract" and _HAS_TESSERACT:
+            use_easyocr = False
+        elif config_engine == "easyocr":
+            use_easyocr = True
+        else:
+            # On Pi 4, if EasyOCR is available, use it for best accuracy; fallback to Tesseract
+            use_easyocr = True
 
+    lines = []
+
+    # ─────────────────────────────────────────────
+    # Path A: EasyOCR (PyTorch / CPU Optimized)
+    # ─────────────────────────────────────────────
     if use_easyocr:
+        reader = _get_easyocr_reader()
+        if reader is not None:
+            try:
+                rgb_img = cv2.cvtColor(scaled_img, cv2.COLOR_BGR2RGB) if len(scaled_img.shape) == 3 else scaled_img
+                with _EASYOCR_LOCK:
+                    results = reader.readtext(rgb_img, detail=1)
+
+                seen_entries = set()
+                for bbox, text, conf in results:
+                    text_clean = str(text).strip()
+                    if text_clean and conf > 0.08 and text_clean not in seen_entries:
+                        seen_entries.add(text_clean)
+                        pts = [[int(pt[0] / scale_factor), int(pt[1] / scale_factor)] for pt in bbox]
+                        xs = [p[0] for p in pts]
+                        ys = [p[1] for p in pts]
+                        x_min, x_max = min(xs), max(xs)
+                        y_min, y_max = min(ys), max(ys)
+
+                        lines.append({
+                            "text": text_clean,
+                            "confidence": round(float(conf), 2),
+                            "bbox": pts,
+                            "x_min": x_min,
+                            "x_max": x_max,
+                            "y_min": y_min,
+                            "y_max": y_max,
+                            "center_x": (x_min + x_max) / 2.0,
+                            "center_y": (y_min + y_max) / 2.0,
+                            "width": x_max - x_min,
+                            "height": y_max - y_min,
+                        })
+                return lines
+            except Exception as err:
+                print(f"[OCR] EasyOCR note: {err}", flush=True)
+
+    # ─────────────────────────────────────────────
+    # Path B: PyTesseract Fallback
+    # ─────────────────────────────────────────────
+    if _HAS_TESSERACT:
         try:
-            reader = _get_easyocr_reader()
+            import pytesseract  # pyrefly: ignore [missing-import]
+            gray = cv2.cvtColor(scaled_img, cv2.COLOR_BGR2GRAY) if len(scaled_img.shape) == 3 else scaled_img
+            tess_psm = _CONFIG.get("ocr", {}).get("tesseract_psm", 6)
+            tess_oem = _CONFIG.get("ocr", {}).get("tesseract_oem", 1)
+            custom_config = f"--psm {tess_psm} --oem {tess_oem}"
 
-            # Fast Single Pass on RGB Image (Thread-safe)
-            rgb_raw = cv2.cvtColor(scaled_img, cv2.COLOR_BGR2RGB) if (len(scaled_img.shape) == 3 and scaled_img.shape[2] == 3) else scaled_img
-            with _EASYOCR_LOCK:
-                results = reader.readtext(rgb_raw, canvas_size=800, detail=1)
-
-            seen_entries = set()
-
-            for bbox, text, conf in results:
-                text_clean = str(text).strip()
-                if text_clean and conf > 0.10 and text_clean not in seen_entries:
-                    seen_entries.add(text_clean)
-                    pts = [[int(pt[0] / scale_factor), int(pt[1] / scale_factor)] for pt in bbox]
-                    xs = [p[0] for p in pts]
-                    ys = [p[1] for p in pts]
-                    x_min, x_max = min(xs), max(xs)
-                    y_min, y_max = min(ys), max(ys)
-                    cx = (x_min + x_max) / 2.0
-                    cy = (y_min + y_max) / 2.0
+            data = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT, config=custom_config)
+            n_boxes = len(data["text"])
+            for i in range(n_boxes):
+                text_clean = data["text"][i].strip()
+                conf_val = float(data["conf"][i])
+                if text_clean and conf_val > 15:
+                    x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
+                    x_min = int(x / scale_factor)
+                    y_min = int(y / scale_factor)
+                    x_max = int((x + w) / scale_factor)
+                    y_max = int((y + h) / scale_factor)
 
                     lines.append({
                         "text": text_clean,
-                        "confidence": round(float(conf), 2),
-                        "bbox": pts,
+                        "confidence": round(conf_val / 100.0, 2),
+                        "bbox": [[x_min, y_min], [x_max, y_min], [x_max, y_max], [x_min, y_max]],
                         "x_min": x_min,
                         "x_max": x_max,
                         "y_min": y_min,
                         "y_max": y_max,
-                        "center_x": cx,
-                        "center_y": cy,
+                        "center_x": (x_min + x_max) / 2.0,
+                        "center_y": (y_min + y_max) / 2.0,
                         "width": x_max - x_min,
                         "height": y_max - y_min,
                     })
             return lines
         except Exception as err:
-            print(f"EasyOCR Note: {err}")
-
-    # Fallback to standard EasyOCR on raw image if unwarping/enhancement had no lines
-    try:
-        reader = _get_easyocr_reader()
-        if len(img.shape) == 3 and img.shape[2] == 3:
-            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        else:
-            rgb_img = img
-
-        results = reader.readtext(rgb_img)
-        for bbox, text, conf in results:
-            text_clean = str(text).strip()
-            if text_clean:
-                pts = [[int(pt[0]), int(pt[1])] for pt in bbox]
-                xs = [p[0] for p in pts]
-                ys = [p[1] for p in pts]
-                x_min, x_max = min(xs), max(xs)
-                y_min, y_max = min(ys), max(ys)
-                lines.append({
-                    "text": text_clean,
-                    "confidence": round(float(conf), 2),
-                    "bbox": pts,
-                    "x_min": x_min,
-                    "x_max": x_max,
-                    "y_min": y_min,
-                    "y_max": y_max,
-                    "center_x": (x_min + x_max) / 2.0,
-                    "center_y": (y_min + y_max) / 2.0,
-                    "width": x_max - x_min,
-                    "height": y_max - y_min,
-                })
-    except Exception:
-        pass
+            print(f"[OCR] PyTesseract note: {err}", flush=True)
 
     return lines
 
 
-def extract_text(img: np.ndarray, debug_save_path: str = None, engine: str = "auto") -> str:
-    if debug_save_path:
-        processed = preprocess(img)
-        cv2.imwrite(debug_save_path, processed)
-
+def extract_text(img: np.ndarray, engine: str = "auto") -> str:
     lines_data = extract_image_data(img, engine=engine)
-    raw_text = "\n".join(item["text"] for item in lines_data)
-    return raw_text
+    return "\n".join(item["text"] for item in lines_data)

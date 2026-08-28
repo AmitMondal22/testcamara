@@ -1,0 +1,122 @@
+{
+  "app": {
+    "title": "Vision Scraper - Raspberry Pi 4 Model B Dialysis Telemetry Engine",
+    "extraction_interval_seconds": 1.0,
+    "burst_frame_count": 3,
+    "burst_delay_seconds": 0.05,
+    "output_dir": "output",
+    "save_capture_images": true,
+    "save_telemetry_json": true,
+    "realtime_terminal_print": true
+  },
+  "hardware": {
+    "target_platform": "raspberry_pi_4",
+    "use_v4l2": true,
+    "default_camera_index": 0,
+    "camera_width": 1280,
+    "camera_height": 720,
+    "camera_fps": 30,
+    "thread_workers": 4
+  },
+  "ocr": {
+    "engine": "auto",
+    "fallback_engine": "tesseract",
+    "easyocr_gpu": false,
+    "tesseract_psm": 6,
+    "tesseract_oem": 1,
+    "digit_whitelist": "0123456789.:,-",
+    "max_ocr_dimension": 800
+  },
+  "deskew_tilt": {
+    "enable_auto_unwarp": true,
+    "enable_tilt_deskew": true,
+    "min_contour_area_ratio": 0.08,
+    "canny_thresh_low": 30,
+    "canny_thresh_high": 150,
+    "max_tilt_angle_deg": 45.0,
+    "clahe_clip_limit": 3.0,
+    "clahe_tile_grid_size": [8, 8]
+  },
+  "dialysis_fields": {
+    "UF Volume": {
+      "regex": "(UF|LF|UV|UN)\\s*(Volume|Vol|Volun|Voi|Vot)",
+      "unit": "ml",
+      "type": "integer",
+      "min_val": 0,
+      "max_val": 9999
+    },
+    "UF Time Left": {
+      "regex": "(UF|LF|UV|UN)\\s*Tim[ea]\\s*(Left|Lot|Led|Let|Lft|Lel)?",
+      "unit": "h:min",
+      "type": "time",
+      "format": "H:MM"
+    },
+    "UF Rate": {
+      "regex": "(UF|LF|UV|UN)\\s*(Rate|Rale|Ral|Rte)",
+      "unit": "ml/h",
+      "type": "integer",
+      "min_val": 0,
+      "max_val": 3000
+    },
+    "UF Goal": {
+      "regex": "(UF|LF|UV|UN)\\s*(Goal|God|Goa|Gol)",
+      "unit": "ml",
+      "type": "integer",
+      "min_val": 0,
+      "max_val": 9999
+    },
+    "Eff. Blood Flow": {
+      "regex": "(Eff\\.?|Bff|Bid)?\\s*Bl[oo]*d?\\s*(Flow|Flot|Fiot|Flo)",
+      "unit": "ml/min",
+      "type": "integer",
+      "min_val": 0,
+      "max_val": 800
+    },
+    "Cum. Blood Vol.": {
+      "regex": "(Cum\\.?|Cun|Cumn)?\\s*(Blood|Blod|Daadia)?\\s*Vol",
+      "unit": "l",
+      "type": "decimal",
+      "min_val": 0.0,
+      "max_val": 200.0
+    },
+    "Kt/V": {
+      "regex": "Kt\\s*/?\\s*V|KI\\s*/?\\s*V|K1\\s*/?\\s*V",
+      "unit": "",
+      "type": "decimal",
+      "min_val": 0.0,
+      "max_val": 5.0
+    },
+    "Plasma Na": {
+      "regex": "Plasma\\s*(Na|N|Na\\+)?|Pheni|phenu",
+      "unit": "mmol/l",
+      "type": "integer",
+      "min_val": 100,
+      "max_val": 180
+    },
+    "Goal in": {
+      "regex": "Goal\\s*in|Gol\\s*in",
+      "unit": "h:min",
+      "type": "time",
+      "format": "H:MM"
+    },
+    "Clearance": {
+      "regex": "Clearance|Claance|Charanco",
+      "unit": "ml/min",
+      "type": "integer",
+      "min_val": 0,
+      "max_val": 500
+    }
+  },
+  "devices": [
+    {
+      "id": "001",
+      "name": "Raspberry Pi 4 Camera / USB Webcam",
+      "ip": "127.0.0.1",
+      "rtsp_url": "0",
+      "mode": "dialysis",
+      "extraction_interval": 1.0,
+      "burst_count": 3,
+      "show_boxes": true
+    }
+  ]
+}
