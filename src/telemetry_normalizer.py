@@ -6,7 +6,7 @@ Non-Destructive Telemetry Sanitizer & Latching Memory Engine.
 Ensures:
   1. RAW OCR numeric digits are preserved EXACTLY as discrete readings (NO arithmetic averaging).
   2. Formatting cleanup: removes commas (e.g. '3,971' -> '3971') and standardizes time colons ('1.43' -> '1:43').
-  3. Latching Memory: If a live video frame misses a box for a split second, the previous accurate reading is retained so the UI and console never drop to empty.
+  3. Latching Memory: Only latches verified, valid readings. Ignores random webcam noise.
 """
 
 import re
@@ -15,48 +15,14 @@ from typing import Dict, Any
 _DEVICE_LAST_KNOWN: Dict[str, Dict[str, Any]] = {}
 
 
-def sanitize_raw_value(field_name: str, raw_val: str) -> str:
-    """Cleans raw OCR string formatting without altering numeric digits."""
-    if not raw_val or raw_val in ("null", "None", ""):
-        return ""
-
-    val = str(raw_val).strip()
-
-    if "--" in val or "-:-" in val:
-        return "--:--"
-
-    # Remove thousand-separator commas
-    clean_val = val.replace(",", "").strip()
-
-    # Time fields: format '.' to ':' if formatted as H.MM or HH.MM
-    if field_name in ("UF Time Left", "Goal in"):
-        m = re.match(r"^(\d{1,2})[\.:](\d{2})$", clean_val)
-        if m:
-            return f"{m.group(1)}:{m.group(2)}"
-        return clean_val
-
-    # Decimal fields (Kt/V, Cum. Blood Vol.): preserve exact dots/decimals
-    if field_name in ("Kt/V", "Cum. Blood Vol."):
-        clean_val = clean_val.replace(",", ".")
-        m = re.search(r"(\d+\.?\d*)", clean_val)
-        if m:
-            return m.group(1)
-        return clean_val
-
-    # General numeric fields
-    m_num = re.search(r"(\d+[\.:]?\d*)", clean_val)
-    if m_num:
-        return m_num.group(1)
-
-    return clean_val
-
-
 def apply_temporal_smoothing(device_id: str, fields: Dict[str, Any]) -> Dict[str, Any]:
     """
     Applies non-destructive discrete sanitization and memory latching.
-    Retains the exact extracted numbers and holds previous accurate readings
-    if a live webcam frame experiences temporary obstruction.
+    Retains exact numbers and holds previous accurate readings if a live video
+    frame experiences temporary occlusion. Rejects noise.
     """
+    from src.field_parser import is_valid_field_value, sanitize_digit_string
+
     if device_id not in _DEVICE_LAST_KNOWN:
         _DEVICE_LAST_KNOWN[device_id] = {}
 
@@ -69,19 +35,15 @@ def apply_temporal_smoothing(device_id: str, fields: Dict[str, Any]) -> Dict[str
             continue
 
         raw_val = fdict.get("value")
-        clean_val = sanitize_raw_value(fname, raw_val)
+        clean_val = sanitize_digit_string(raw_val, fname)
 
         new_fdict = dict(fdict)
-        new_fdict["value"] = clean_val
+        new_fdict["value"] = clean_val if (clean_val and is_valid_field_value(fname, clean_val)) else None
 
-        # Latching memory: update when current frame has a valid value
-        if clean_val:
+        if new_fdict["value"] and float(new_fdict.get("confidence", 0.0)) >= 0.90:
             last_known[fname] = new_fdict
             sanitized_fields[fname] = new_fdict
         else:
-            if fname in last_known:
-                sanitized_fields[fname] = last_known[fname]
-            else:
-                sanitized_fields[fname] = new_fdict
+            sanitized_fields[fname] = {"value": None, "unit": fdict.get("unit", ""), "confidence": 0.0}
 
     return sanitized_fields

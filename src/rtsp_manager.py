@@ -1,10 +1,11 @@
 """
 rtsp_manager.py
 ----------------
-RTSP & Multi-Camera Manager with 1-Second 3-Frame Burst Extraction & Telemetry Engine.
-Manages concurrent camera video streams, performs async 3-frame burst OCR with
+USB Camera Manager with 1-Second 3-Frame Burst Extraction & Telemetry Engine.
+Manages USB webcam video stream, performs async 3-frame burst OCR with
 discrete consensus voting (no arithmetic averaging), maintains live telemetry states,
 handles reconnections, and outputs 100% accurate data to terminal & JSON.
+USB camera only - no RTSP support.
 """
 
 import os
@@ -95,12 +96,8 @@ class CameraWorker:
         self.sim_tick = 0
 
     def _load_synthetic_base(self):
-        if os.path.exists(SAMPLE_IMG_PATH):
-            img = cv2.imread(SAMPLE_IMG_PATH)
-            if img is not None:
-                return img
         img = np.zeros((720, 1280, 3), dtype=np.uint8)
-        cv2.putText(img, "CAMERA FEED", (450, 360), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)
+        cv2.putText(img, "USB CAMERA CONNECTING...", (380, 360), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 200, 255), 2)
         return img
 
     def start(self):
@@ -115,93 +112,54 @@ class CameraWorker:
             self.thread.join(timeout=1.0)
 
     def _generate_synthetic_frame(self) -> np.ndarray:
-        frame = self.base_synthetic.copy()
-        self.sim_tick += 1
-        now_str = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
-        cv2.putText(frame, f"IPC  {now_str}", (25, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (240, 240, 240), 2, cv2.LINE_AA)
-        noise = np.random.randint(-2, 3, frame.shape, dtype=np.int16)
-        return np.clip(frame.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cv2.putText(frame, "USB CAMERA OFFLINE / CONNECTING...", (320, 340), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 165, 255), 2)
+        cv2.putText(frame, f"Checking camera index #{self.rtsp_url} - {now_str}", (340, 390), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 180, 180), 1)
+        return frame
 
     def _worker_loop(self):
-        cap = None
-        is_synthetic = False
-        is_webcam = self.rtsp_url.isdigit()
+        from src.capture import open_camera
+        cam_id = int(self.rtsp_url) if self.rtsp_url.isdigit() else 0
+        cap = open_camera(camera_index=cam_id, width=1280, height=720)
 
-        if self.rtsp_url.startswith("synthetic://"):
-            is_synthetic = True
-            self.status = "Online (Simulated)"
+        if cap and cap.isOpened():
+            self.status = "Online (USB Camera)"
         else:
-            try:
-                import sys
-                backend = cv2.CAP_V4L2 if sys.platform.startswith("linux") else (cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY)
-                if is_webcam:
-                    cam_id = int(self.rtsp_url)
-                    cap = cv2.VideoCapture(cam_id, backend)
-                    if not cap or not cap.isOpened():
-                        cap = cv2.VideoCapture(cam_id)
-                else:
-                    cap = cv2.VideoCapture(self.rtsp_url)
+            self.status = "Connecting USB Camera..."
 
-                if cap and cap.isOpened():
-                    self.status = "Online (Live Camera)" if is_webcam else "Online (RTSP Stream)"
-                else:
-                    if not is_webcam:
-                        is_synthetic = True
-                        self.status = "Online (Simulated RTSP)"
-                    else:
-                        self.status = "Connecting Camera..."
-            except Exception:
-                if not is_webcam:
-                    is_synthetic = True
-                    self.status = "Online (Simulated RTSP)"
-
-        reconnect_attempts = 0
-        last_reconnect_time = 0
+        last_reconnect_time = time.time()
         burst_buffer = []
 
         while self.running:
             raw_frame = None
 
-            if is_webcam and (cap is None or not cap.isOpened()):
-                now_rec = time.time()
-                if now_rec - last_reconnect_time >= 2.0:
-                    last_reconnect_time = now_rec
+            # Reconnection check if cap is closed
+            if cap is None or not cap.isOpened():
+                now = time.time()
+                if now - last_reconnect_time >= 1.0:
+                    last_reconnect_time = now
                     try:
-                        cam_id = int(self.rtsp_url)
-                        import sys
-                        backend = cv2.CAP_V4L2 if sys.platform.startswith("linux") else (cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY)
-                        cap = cv2.VideoCapture(cam_id, backend)
-                        if not cap or not cap.isOpened():
-                            cap = cv2.VideoCapture(cam_id)
+                        cap = open_camera(camera_index=cam_id, width=1280, height=720)
                         if cap and cap.isOpened():
-                            self.status = "Online (Live Camera)"
+                            self.status = "Online (USB Camera)"
                     except Exception:
-                        pass
+                        cap = None
 
-            if not is_synthetic and cap is not None and cap.isOpened():
+            if cap is not None and cap.isOpened():
                 try:
                     ret, frame = cap.read()
                     if ret and frame is not None and frame.size > 0:
                         raw_frame = frame
-                        reconnect_attempts = 0
-                        self.status = "Online (Live Camera)" if is_webcam else "Online (RTSP Stream)"
+                        self.status = "Online (USB Camera)"
                     else:
-                        reconnect_attempts += 1
-                        time.sleep(0.05)
-                        if reconnect_attempts >= 60:
-                            if not is_webcam:
-                                is_synthetic = True
-                                self.status = "Online (Fallback Stream)"
-                            else:
-                                try:
-                                    cap.release()
-                                except Exception:
-                                    pass
-                                cap = None
-                                reconnect_attempts = 0
+                        time.sleep(0.02)
                 except Exception:
-                    reconnect_attempts += 1
-                    time.sleep(0.05)
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+                    cap = None
 
             if raw_frame is None:
                 raw_frame = self._generate_synthetic_frame()
@@ -253,27 +211,15 @@ class CameraWorker:
                 fields_per_frame = []
                 last_lines_data = []
 
-                # Process each frame in the 3-frame burst
+                from src.screen_extractor import extract_fields
+
+                # Process each frame in the 3-frame burst using unified extractor
                 for idx, frame in enumerate(burst_frames):
-                    # 1. Perspective deskew & spatial extraction
-                    lines_data = extract_image_data(frame, engine="auto", unwarp=True)
-                    spatial_fields = parse_spatial_dialysis_fields(lines_data)
-                    bb_fields = extract_from_black_boxes(frame)
-
-                    frame_fields = {}
-                    canonical_fields = list(load_field_config().keys())
-                    for fname in canonical_fields:
-                        if fname in spatial_fields and spatial_fields[fname].get("value"):
-                            frame_fields[fname] = spatial_fields[fname]
-                        elif fname in bb_fields and bb_fields[fname].get("value"):
-                            frame_fields[fname] = bb_fields[fname]
-                        elif fname in spatial_fields:
-                            frame_fields[fname] = spatial_fields[fname]
-                        elif fname in bb_fields:
-                            frame_fields[fname] = bb_fields[fname]
-
+                    frame_fields = extract_fields(frame, engine="auto")
                     fields_per_frame.append(frame_fields)
-                    last_lines_data = lines_data
+
+                # Only run spatial OCR on last frame for raw text metadata
+                last_lines_data = extract_image_data(burst_frames[-1], engine="auto", unwarp=True)
 
                 # 2. Multi-Frame Discrete Consensus Voting (NO ARITHMETIC AVERAGING)
                 consensus_fields = consensus_vote_discrete(fields_per_frame)
@@ -554,6 +500,13 @@ class RTSPStreamManager:
         if worker:
             return worker.capture_and_save()
         return {}
+
+    def stop_all(self):
+        for worker in self.workers.values():
+            try:
+                worker.stop()
+            except Exception:
+                pass
 
 
 rtsp_manager = RTSPStreamManager()

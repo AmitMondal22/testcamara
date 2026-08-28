@@ -7,7 +7,9 @@
     "output_dir": "output",
     "save_capture_images": true,
     "save_telemetry_json": true,
-    "realtime_terminal_print": true
+    "realtime_terminal_print": true,
+    "headless": true,
+    "camera_type": "usb"
   },
   "hardware": {
     "target_platform": "raspberry_pi_4",
@@ -39,84 +41,56 @@
   },
   "dialysis_fields": {
     "UF Volume": {
-      "regex": "(UF|LF|UV|UN)\\s*(Volume|Vol|Volun|Voi|Vot)",
       "unit": "ml",
-      "type": "integer",
-      "min_val": 0,
-      "max_val": 9999
+      "type": "number"
     },
     "UF Time Left": {
-      "regex": "(UF|LF|UV|UN)\\s*Tim[ea]\\s*(Left|Lot|Led|Let|Lft|Lel)?",
       "unit": "h:min",
-      "type": "time",
-      "format": "H:MM"
+      "type": "time"
     },
     "UF Rate": {
-      "regex": "(UF|LF|UV|UN)\\s*(Rate|Rale|Ral|Rte)",
       "unit": "ml/h",
-      "type": "integer",
-      "min_val": 0,
-      "max_val": 3000
+      "type": "number"
     },
     "UF Goal": {
-      "regex": "(UF|LF|UV|UN)\\s*(Goal|God|Goa|Gol)",
       "unit": "ml",
-      "type": "integer",
-      "min_val": 0,
-      "max_val": 9999
+      "type": "number"
     },
     "Eff. Blood Flow": {
-      "regex": "(Eff\\.?|Bff|Bid)?\\s*Bl[oo]*d?\\s*(Flow|Flot|Fiot|Flo)",
       "unit": "ml/min",
-      "type": "integer",
-      "min_val": 0,
-      "max_val": 800
+      "type": "number"
     },
     "Cum. Blood Vol.": {
-      "regex": "(Cum\\.?|Cun|Cumn)?\\s*(Blood|Blod|Daadia)?\\s*Vol",
       "unit": "l",
-      "type": "decimal",
-      "min_val": 0.0,
-      "max_val": 200.0
+      "type": "number"
     },
     "Kt/V": {
-      "regex": "Kt\\s*/?\\s*V|KI\\s*/?\\s*V|K1\\s*/?\\s*V",
       "unit": "",
-      "type": "decimal",
-      "min_val": 0.0,
-      "max_val": 5.0
+      "type": "number"
     },
     "Plasma Na": {
-      "regex": "Plasma\\s*(Na|N|Na\\+)?|Pheni|phenu",
       "unit": "mmol/l",
-      "type": "integer",
-      "min_val": 100,
-      "max_val": 180
+      "type": "number"
     },
     "Goal in": {
-      "regex": "Goal\\s*in|Gol\\s*in",
       "unit": "h:min",
-      "type": "time",
-      "format": "H:MM"
+      "type": "time"
     },
     "Clearance": {
-      "regex": "Clearance|Claance|Charanco",
       "unit": "ml/min",
-      "type": "integer",
-      "min_val": 0,
-      "max_val": 500
+      "type": "number"
     }
   },
   "devices": [
     {
       "id": "001",
-      "name": "Raspberry Pi 4 Camera / USB Webcam",
+      "name": "USB Webcam",
       "ip": "127.0.0.1",
       "rtsp_url": "0",
       "mode": "dialysis",
       "extraction_interval": 1.0,
       "burst_count": 3,
-      "show_boxes": true
+      "show_boxes": false
     }
   ]
 }
