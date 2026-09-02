@@ -82,16 +82,21 @@ def load_image(path: str) -> np.ndarray:
 def preprocess(img: np.ndarray, upscale: bool = True) -> np.ndarray:
     """
     Clean up the image so OCR engines can read text/digits cleanly.
+    Optimized for IMX477 IR-CUT Infrared camera input and LCD monitor feeds.
     """
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    if len(img.shape) == 3:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = img.copy()
 
     if upscale:
         gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
 
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    # Adaptive CLAHE contrast enhancement for Infrared light variations
+    clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8, 8))
     gray = clahe.apply(gray)
 
-    denoised = cv2.fastNlMeansDenoising(gray, h=10)
+    denoised = cv2.fastNlMeansDenoising(gray, h=8)
 
     thresh = cv2.adaptiveThreshold(
         denoised, 255,
@@ -107,6 +112,7 @@ def _get_easyocr_reader():
     if _EASYOCR_READER is None:
         with _EASYOCR_LOCK:
             if _EASYOCR_READER is None:
+                # pyrefly: ignore [missing-import]
                 import easyocr
                 _EASYOCR_READER = easyocr.Reader(['en'], gpu=False, verbose=False)
     return _EASYOCR_READER
@@ -121,7 +127,7 @@ def auto_unwarp_screen(img: np.ndarray) -> np.ndarray:
         return img
 
     h_img, w_img = img.shape[:2]
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edged = cv2.Canny(blurred, 30, 150)
 
@@ -170,22 +176,23 @@ def auto_unwarp_screen(img: np.ndarray) -> np.ndarray:
 
 
 def enhance_contrast(img: np.ndarray) -> np.ndarray:
-    """Enhance contrast for LCD screens using CLAHE."""
+    """Enhance contrast for LCD screens using CLAHE (supports BGR & Grayscale/IR)."""
     if len(img.shape) == 3:
         lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8, 8))
         cl = clahe.apply(l)
         limg = cv2.merge((cl, a, b))
         return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
     else:
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8, 8))
         return clahe.apply(img)
 
 
 def extract_image_data(img: np.ndarray, engine: str = "auto", unwarp: bool = False) -> list:
     """
     Scrapes text & numeric entries with double-pass OCR (Raw RGB + Otsu Binarized) for LCD displays.
+    Optimized for high-speed sub-second execution on Raspberry Pi 4 and PC platforms.
     """
     if img is None or img.size == 0:
         return []
@@ -193,74 +200,74 @@ def extract_image_data(img: np.ndarray, engine: str = "auto", unwarp: bool = Fal
     lines = []
     h_orig, w_orig = img.shape[:2]
     max_dim = max(h_orig, w_orig)
-    if max_dim > 1000:
-        scale_factor = 1000.0 / max_dim
+    if max_dim > 1400:
+        scale_factor = 1400.0 / max_dim
         scaled_img = cv2.resize(img, (int(w_orig * scale_factor), int(h_orig * scale_factor)), interpolation=cv2.INTER_AREA)
     else:
         scale_factor = 1.0
         scaled_img = img
 
-    use_easyocr = (engine == "easyocr")
-    if engine == "auto":
-        use_easyocr = not _HAS_TESSERACT
+    if unwarp:
+        scaled_img = auto_unwarp_screen(scaled_img)
 
-    if use_easyocr:
+    use_tesseract = (engine == "tesseract") or (engine == "auto" and _HAS_TESSERACT)
+
+    if use_tesseract:
         try:
-            reader = _get_easyocr_reader()
+            import pytesseract
+            gray_proc = cv2.cvtColor(scaled_img, cv2.COLOR_BGR2GRAY) if len(scaled_img.shape) == 3 else scaled_img
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            gray_proc = clahe.apply(gray_proc)
 
-            # Fast Single Pass on RGB Image (Thread-safe)
-            rgb_raw = cv2.cvtColor(scaled_img, cv2.COLOR_BGR2RGB) if (len(scaled_img.shape) == 3 and scaled_img.shape[2] == 3) else scaled_img
-            with _EASYOCR_LOCK:
-                results = reader.readtext(rgb_raw, canvas_size=800, detail=1)
-
-            seen_entries = set()
-
-            for bbox, text, conf in results:
-                text_clean = str(text).strip()
-                if text_clean and conf > 0.10 and text_clean not in seen_entries:
-                    seen_entries.add(text_clean)
-                    pts = [[int(pt[0] / scale_factor), int(pt[1] / scale_factor)] for pt in bbox]
-                    xs = [p[0] for p in pts]
-                    ys = [p[1] for p in pts]
-                    x_min, x_max = min(xs), max(xs)
-                    y_min, y_max = min(ys), max(ys)
-                    cx = (x_min + x_max) / 2.0
-                    cy = (y_min + y_max) / 2.0
-
+            tess_data = pytesseract.image_to_data(
+                gray_proc,
+                output_type=pytesseract.Output.DICT,
+                config="--psm 6"
+            )
+            n_boxes = len(tess_data["text"])
+            for i in range(n_boxes):
+                text_clean = tess_data["text"][i].strip()
+                conf = float(tess_data["conf"][i])
+                if text_clean and conf > 10:
+                    x = int(tess_data["left"][i] / scale_factor)
+                    y = int(tess_data["top"][i] / scale_factor)
+                    w = int(tess_data["width"][i] / scale_factor)
+                    h = int(tess_data["height"][i] / scale_factor)
                     lines.append({
                         "text": text_clean,
-                        "confidence": round(float(conf), 2),
-                        "bbox": pts,
-                        "x_min": x_min,
-                        "x_max": x_max,
-                        "y_min": y_min,
-                        "y_max": y_max,
-                        "center_x": cx,
-                        "center_y": cy,
-                        "width": x_max - x_min,
-                        "height": y_max - y_min,
+                        "confidence": round(conf / 100.0, 2),
+                        "bbox": [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+                        "x_min": x,
+                        "x_max": x + w,
+                        "y_min": y,
+                        "y_max": y + h,
+                        "center_x": x + w / 2.0,
+                        "center_y": y + h / 2.0,
+                        "width": w,
+                        "height": h,
                     })
-            return lines
+            if lines:
+                return lines
         except Exception as err:
-            print(f"EasyOCR Note: {err}")
+            pass
 
-    # Fallback to standard EasyOCR on raw image if unwarping/enhancement had no lines
+    # Fallback to EasyOCR
     try:
         reader = _get_easyocr_reader()
-        if len(img.shape) == 3 and img.shape[2] == 3:
-            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        else:
-            rgb_img = img
+        rgb_raw = cv2.cvtColor(scaled_img, cv2.COLOR_BGR2RGB) if (len(scaled_img.shape) == 3 and scaled_img.shape[2] == 3) else scaled_img
+        results = reader.readtext(rgb_raw, canvas_size=960, detail=1)
 
-        results = reader.readtext(rgb_img)
+        seen_entries = set()
         for bbox, text, conf in results:
             text_clean = str(text).strip()
-            if text_clean:
-                pts = [[int(pt[0]), int(pt[1])] for pt in bbox]
+            if text_clean and conf > 0.10 and text_clean not in seen_entries:
+                seen_entries.add(text_clean)
+                pts = [[int(pt[0] / scale_factor), int(pt[1] / scale_factor)] for pt in bbox]
                 xs = [p[0] for p in pts]
                 ys = [p[1] for p in pts]
                 x_min, x_max = min(xs), max(xs)
                 y_min, y_max = min(ys), max(ys)
+
                 lines.append({
                     "text": text_clean,
                     "confidence": round(float(conf), 2),
@@ -274,8 +281,11 @@ def extract_image_data(img: np.ndarray, engine: str = "auto", unwarp: bool = Fal
                     "width": x_max - x_min,
                     "height": y_max - y_min,
                 })
-    except Exception:
-        pass
+        return lines
+    except Exception as err:
+        print(f"EasyOCR Note: {err}")
+
+    return lines
 
     return lines
 

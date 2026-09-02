@@ -172,10 +172,11 @@ def run_webcam(headless: bool = False, camera_index: int = 0, mode: str = "dialy
 def run_live(camera_index: int = 0, mode: str = "dialysis", engine: str = "auto"):
     from src.capture import capture_live_stream
 
-    def live_callback(frame):
-        process_burst_images([frame], source_label=f"Live Webcam #{camera_index}", mode=mode, engine=engine)
+    def live_callback(frame_or_frames):
+        frames = frame_or_frames if isinstance(frame_or_frames, list) else [frame_or_frames]
+        process_burst_images(frames, source_label=f"Live Webcam #{camera_index}", mode=mode, engine=engine)
 
-    capture_live_stream(camera_index=camera_index, process_fn=live_callback, frame_interval=2.0)
+    capture_live_stream(camera_index=camera_index, process_fn=live_callback, frame_interval=1.0)
 
 
 def interactive_menu():

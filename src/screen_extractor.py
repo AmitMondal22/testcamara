@@ -122,13 +122,21 @@ def _reformat(field: str, raw: str) -> str:
 def extract_fields(img: np.ndarray, engine: str = "auto") -> dict:
     """
     Robust medical screen extraction pipeline:
-    1. Unwarps perspective if webcam is angled/tilted.
-    2. Enhances LCD contrast.
-    3. Runs spatial label-to-value proximity matching.
+    1. Runs position-based dark box detection (black_box_extractor) with dynamic margin expansion.
+    2. Fallback to spatial label-to-value proximity matching if dark box count is low.
+    3. Applies temporal smoothing & non-destructive field sanitization.
     """
+    from src.black_box_extractor import extract_from_black_boxes
+    from src.telemetry_normalizer import apply_temporal_smoothing
+
+    bb_results = extract_from_black_boxes(img)
+    valid_count = sum(1 for f in bb_results.values() if isinstance(f, dict) and f.get("value") is not None)
+    if valid_count >= 3:
+        return apply_temporal_smoothing("upload_device", bb_results)
+
     from src.ocr_extract import extract_image_data
     from src.field_parser import parse_spatial_dialysis_fields
 
     lines_data = extract_image_data(img, engine=engine, unwarp=True)
-    results = parse_spatial_dialysis_fields(lines_data)
-    return results
+    spatial_results = parse_spatial_dialysis_fields(lines_data)
+    return apply_temporal_smoothing("upload_device", spatial_results)

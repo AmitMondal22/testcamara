@@ -11,17 +11,30 @@ import time
 import sys
 
 
+def _get_backend():
+    """Return platform-appropriate OpenCV VideoCapture backend (V4L2 on Linux/Raspberry Pi, DSHOW on Windows)."""
+    if sys.platform.startswith("win"):
+        return cv2.CAP_DSHOW
+    elif sys.platform.startswith("linux"):
+        return cv2.CAP_V4L2
+    return cv2.CAP_ANY
+
+
 def discover_camera_details(max_tested: int = 5) -> list:
     """Detect available hardware camera devices and return rich metadata."""
     cameras = []
+    backend = _get_backend()
     for idx in range(max_tested):
         try:
-            cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY)
+            cap = cv2.VideoCapture(idx, backend)
+            if not cap.isOpened():
+                cap = cv2.VideoCapture(idx)
+
             if cap.isOpened():
                 ret, frame = cap.read()
                 if ret and frame is not None:
                     h, w = frame.shape[:2]
-                    label = "Laptop Built-in Webcam" if idx == 0 else f"Attached USB Camera #{idx}"
+                    label = "IMX477 IR Camera / Webcam #0" if idx == 0 else f"Attached Camera #{idx}"
                     cameras.append({
                         "index": idx,
                         "id": str(idx),
@@ -48,7 +61,8 @@ def capture_from_webcam(camera_index: int = 0, num_frames: int = 1) -> list:
     Opens an interactive webcam GUI window.
     When SPACE/c is pressed, captures 1 crisp HD frame for instant high-speed OCR.
     """
-    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY)
+    backend = _get_backend()
+    cap = cv2.VideoCapture(camera_index, backend)
     if not cap.isOpened():
         cap = cv2.VideoCapture(camera_index)
 
@@ -132,7 +146,8 @@ def capture_headless(camera_index: int = 0, num_frames: int = 3, warmup_frames: 
     Non-interactive automatic capture without GUI window.
     Captures `num_frames` automatically in ~1.5 seconds.
     """
-    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY)
+    backend = _get_backend()
+    cap = cv2.VideoCapture(camera_index, backend)
     if not cap.isOpened():
         cap = cv2.VideoCapture(camera_index)
 
@@ -163,12 +178,21 @@ def capture_live_stream(camera_index: int = 0, process_fn=None, frame_interval: 
     Runs OCR on webcam frames every `frame_interval` seconds and calls `process_fn(frame)`.
     Press 'q' in the window to stop live streaming.
     """
-    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY)
+    backend = _get_backend()
+    cap = cv2.VideoCapture(camera_index, backend)
     if not cap.isOpened():
         cap = cv2.VideoCapture(camera_index)
 
     if not cap.isOpened():
         raise RuntimeError(f"Could not open webcam at index {camera_index}")
+
+    # Set camera resolution to HD 1280x720 with MJPG for sharp OCR readability
+    try:
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    except Exception:
+        pass
 
     window_name = "Live Webcam Data Extractor - [Q] Stop Stream"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -188,7 +212,7 @@ def capture_live_stream(camera_index: int = 0, process_fn=None, frame_interval: 
 
             current_time = time.time()
 
-            # Run OCR callback periodically
+            # Run OCR callback periodically on active frame
             if process_fn and (current_time - last_process_time >= frame_interval):
                 process_fn(frame)
                 last_process_time = current_time

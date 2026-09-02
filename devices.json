@@ -1,7 +1,7 @@
 [
   {
     "id": "009",
-    "name": "Laptop Built-in Webcam",
+    "name": "IMX477 IR Camera / Webcam #0",
     "ip": "127.0.0.1",
     "rtsp_url": "0",
     "mode": "dialysis",

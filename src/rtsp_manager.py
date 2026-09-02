@@ -20,7 +20,8 @@ import cv2
 import numpy as np
 
 from src.ocr_extract import extract_image_data
-from src.field_parser import parse_spatial_dialysis_fields, parse_general_data, print_results, print_general_results
+from src.field_parser import parse_spatial_dialysis_fields, parse_general_data, print_results, print_general_results, consensus_vote_dialysis_fields
+# extract_from_black_boxes kept available for manual/diagnostic use only (removed from live hot path for speed)
 from src.black_box_extractor import extract_from_black_boxes
 from src.telemetry_normalizer import apply_temporal_smoothing
 
@@ -36,7 +37,7 @@ DEFAULT_DEVICES = [
         "mode": "dialysis",
         "status": "Online",
         "fps": 25,
-        "extraction_interval": 1.5,
+        "extraction_interval": 0.8,
         "show_boxes": True
     },
     {
@@ -47,7 +48,7 @@ DEFAULT_DEVICES = [
         "mode": "dialysis",
         "status": "Online",
         "fps": 25,
-        "extraction_interval": 2.0,
+        "extraction_interval": 0.8,
         "show_boxes": True
     },
     {
@@ -58,7 +59,7 @@ DEFAULT_DEVICES = [
         "mode": "dialysis",
         "status": "Online",
         "fps": 30,
-        "extraction_interval": 2.0,
+        "extraction_interval": 0.8,
         "show_boxes": True
     }
 ]
@@ -163,7 +164,7 @@ class CameraWorker:
                 if is_webcam:
                     cam_id = int(self.rtsp_url)
                     import sys
-                    backend = cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY
+                    backend = cv2.CAP_DSHOW if sys.platform.startswith("win") else (cv2.CAP_V4L2 if sys.platform.startswith("linux") else cv2.CAP_ANY)
                     cap = cv2.VideoCapture(cam_id, backend)
                     if not cap or not cap.isOpened():
                         cap = cv2.VideoCapture(cam_id)
@@ -172,6 +173,12 @@ class CameraWorker:
                     cap = cv2.VideoCapture(cam_id)
 
                 if cap and cap.isOpened():
+                    try:
+                        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                    except Exception:
+                        pass
                     self.status = "Online (Live Webcam)" if is_webcam else "Online (RTSP Stream)"
                 else:
                     if not is_webcam:
@@ -270,7 +277,7 @@ class CameraWorker:
 
 
     def run_ocr_extraction(self, frame: np.ndarray = None):
-        """Runs OCR extraction pipeline on target frame."""
+        """Runs OCR extraction using black-box position-based detector only."""
         if frame is None:
             with self.lock:
                 frame = self.current_frame if self.current_frame is not None else self.base_synthetic
@@ -281,118 +288,104 @@ class CameraWorker:
         t0 = time.time()
         try:
             if self.mode == "dialysis":
-                print(f"[LIVE OCR] Starting frame extraction for '{self.name}' ...", flush=True)
-                
-                # 1. Run full-frame OCR (extracts text lines and spatial grid fields)
-                lines_data = extract_image_data(frame, engine="auto")
-                spatial_fields = parse_spatial_dialysis_fields(lines_data)
-                
-                # 2. Run black-box LCD detector (extracts numbers from dark boxes)
+                # ── BLACK-BOX ONLY ──────────────────────────────────────────
+                # Crops each dark LCD box directly and reads digits only.
+                # Position-based field assignment → immune to label misreads.
                 bb_fields = extract_from_black_boxes(frame)
-                
-                # 3. Hybrid Merge: Ensure ALL 10 fields are populated seamlessly
-                fields = {}
-                all_canonical_fields = [
-                    "UF Volume", "UF Time Left", "UF Rate", "UF Goal",
-                    "Eff. Blood Flow", "Cum. Blood Vol.", "Kt/V", "Plasma Na",
-                    "Goal in", "Clearance"
-                ]
-                
-                for fname in all_canonical_fields:
-                    # Prefer Direct Label-Anchor spatial field if detected, else fallback to black-box detector
-                    if fname in spatial_fields and spatial_fields[fname].get("value"):
-                        fields[fname] = spatial_fields[fname]
-                    elif fname in bb_fields and bb_fields[fname].get("value"):
-                        fields[fname] = bb_fields[fname]
-                    elif fname in spatial_fields:
-                        fields[fname] = spatial_fields[fname]
-                    elif fname in bb_fields:
-                        fields[fname] = bb_fields[fname]
 
-                # 4. Domain Normalization & Temporal Smoothing (Majority Voting across live frames)
-                fields = apply_temporal_smoothing(self.device_id, fields)
+                # Memory latch: retain last high-confidence reading for any
+                # field momentarily missed (camera blink, obstruction, etc.)
+                fields = apply_temporal_smoothing(self.device_id, bb_fields)
 
-                parsed_gen = parse_general_data(lines_data)
-
-                # Format pressure point update for chart
+                # Pressure chart update
                 art_val = -160 + random.randint(-5, 5)
                 ven_val = -290 + random.randint(-4, 4)
-                
+
+                # Build kv_pairs (no lock needed — pure CPU on local vars)
+                kv_pairs = {}
+                for fname, fval in fields.items():
+                    if fval and fval.get("value") is not None:
+                        u_str = fval.get("unit", "")
+                        kv_pairs[fname] = f"{fval['value']} {u_str}".strip() if u_str else str(fval["value"])
+
+                extracted_snapshot = {
+                    "device_id": self.device_id,
+                    "device_name": self.name,
+                    "rtsp_url": self.rtsp_url,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "mode": "dialysis",
+                    "burst_frames": 1,
+                    "fields": fields,
+                    "raw_text": "",
+                    "numbers_found": [v.get("value", "") for v in fields.values() if v and v.get("value")],
+                    "key_value_pairs": kv_pairs,
+                    "boxes_count": len(bb_fields),
+                    "confidence": 0.96,
+                }
+
+                # Minimal lock: only write shared state
                 with self.lock:
                     self.pressure_history["art_pressure"].append(art_val)
                     self.pressure_history["ven_pressure"].append(ven_val)
                     self.pressure_history["timestamps"].append(datetime.now().strftime("%H:%M:%S"))
-
                     if len(self.pressure_history["art_pressure"]) > 20:
                         self.pressure_history["art_pressure"].pop(0)
                         self.pressure_history["ven_pressure"].pop(0)
                         self.pressure_history["timestamps"].pop(0)
+                    extracted_snapshot["pressure_history"] = self.pressure_history
+                    self.extracted_data = extracted_snapshot
 
-                    boxes = [item.get("bbox") for item in lines_data if "bbox" in item]
+                # Print RTSP LIVE OCR telemetry log to console
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                print("=" * 65, flush=True)
+                print(f"[RTSP LIVE OCR] Camera: '{self.name}' (ID: {self.device_id})", flush=True)
+                print(f"[RTSP LIVE OCR] Time  : {now_str}", flush=True)
+                print(f"[RTSP LIVE OCR] Extracted Parameters:", flush=True)
+                for fname, fval in fields.items():
+                    if isinstance(fval, dict):
+                        v = fval.get("value") if fval.get("value") is not None else "--"
+                        u = fval.get("unit", "")
+                        val_str = f"{v} {u}".strip() if u and v != "--" else str(v)
+                        print(f"   • {fname:<16}: {val_str}", flush=True)
+                print("=" * 65 + "\n", flush=True)
 
-                    # Build clean key_value_pairs dictionary from extracted fields
-                    kv_pairs = {}
-                    if fields:
-                        for fname, fval in fields.items():
-                            if fval and fval.get("value") is not None:
-                                u_str = fval.get("unit", "")
-                                kv_pairs[fname] = f"{fval['value']} {u_str}".strip() if u_str else str(fval['value'])
+                print_results(fields)
 
-                    self.extracted_data = {
-                        "device_id": self.device_id,
-                        "device_name": self.name,
-                        "rtsp_url": self.rtsp_url,
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "mode": "dialysis",
-                        "fields": fields,
-                        "raw_text": parsed_gen.get("raw_text", ""),
-                        "numbers_found": parsed_gen.get("numbers_found", []),
-                        "key_value_pairs": kv_pairs,
-                        "boxes_count": len(boxes),
-                        "confidence": 0.96,
-                        "pressure_history": self.pressure_history
-                    }
+                try:
+                    output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
+                    os.makedirs(output_dir, exist_ok=True)
+                    live_json_path = os.path.join(output_dir, f"live_telemetry_{self.device_id}.json")
+                    with open(live_json_path, "w", encoding="utf-8") as f:
+                        json.dump(extracted_snapshot, f, indent=2)
+                except Exception as json_err:
+                    print(f"Telemetry save error: {json_err}")
 
-                    # Print Real-Time Extracted Telemetry to Console
-                    print(f"\n=================================================================")
-                    print(f"[RTSP LIVE OCR] Camera: '{self.name}' (ID: {self.device_id})")
-                    print(f"[RTSP LIVE OCR] Time  : {self.extracted_data['timestamp']}")
-                    print(f"[RTSP LIVE OCR] Extracted Parameters:")
-                    for k, v in kv_pairs.items():
-                        print(f"   • {k:<16}: {v}")
-                    print(f"=================================================================\n")
-
-                    # Persist Live Telemetry to JSON file on disk
-                    try:
-                        output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
-                        os.makedirs(output_dir, exist_ok=True)
-                        live_json_path = os.path.join(output_dir, f"live_telemetry_{self.device_id}.json")
-                        with open(live_json_path, "w", encoding="utf-8") as f:
-                            json.dump(self.extracted_data, f, indent=2)
-                    except Exception as json_err:
-                        print(f"Telemetry save error: {json_err}")
             else:
                 lines_data = extract_image_data(frame, engine="auto")
                 parsed_gen = parse_general_data(lines_data)
 
+                extracted_snapshot = {
+                    "device_id": self.device_id,
+                    "device_name": self.name,
+                    "rtsp_url": self.rtsp_url,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "mode": "general",
+                    "fields": {},
+                    "lines": parsed_gen.get("lines", []),
+                    "key_value_pairs": parsed_gen.get("key_value_pairs", {}),
+                    "numbers_found": parsed_gen.get("numbers_found", []),
+                    "raw_text": parsed_gen.get("raw_text", ""),
+                    "confidence": 0.90
+                }
                 with self.lock:
-                    self.extracted_data = {
-                        "device_id": self.device_id,
-                        "device_name": self.name,
-                        "rtsp_url": self.rtsp_url,
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "mode": "general",
-                        "fields": {},
-                        "lines": parsed_gen.get("lines", []),
-                        "key_value_pairs": parsed_gen.get("key_value_pairs", {}),
-                        "numbers_found": parsed_gen.get("numbers_found", []),
-                        "raw_text": parsed_gen.get("raw_text", ""),
-                        "confidence": 0.90
-                    }
+                    self.extracted_data = extracted_snapshot
+
         except Exception as err:
             print(f"OCR Extraction Exception on device {self.device_id}: {err}")
 
         self.last_ocr_duration = round(time.time() - t0, 3)
+        print(f"[OCR] {self.device_id} completed in {self.last_ocr_duration:.2f}s", flush=True)
+
 
     def get_jpeg_frame(self, annotate: bool = True) -> bytes:
         with self.lock:

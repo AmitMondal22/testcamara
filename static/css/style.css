@@ -41,7 +41,7 @@ body.dark-theme {
 
 .app-container {
     display: grid;
-    grid-template-columns: 240px 1fr 420px;
+    grid-template-columns: 240px 1fr 360px;
     height: 100vh;
     width: 100vw;
     overflow: hidden;
@@ -286,13 +286,15 @@ body.dark-theme {
     border: 1px solid var(--border-color);
     border-radius: 6px;
     padding: 8px 14px;
-    gap: 12px;
+    gap: 8px 12px;
+    flex-wrap: wrap;
 }
 
 .top-bar-left, .top-bar-right {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
+    flex-wrap: wrap;
 }
 
 .extraction-active-badge {
@@ -417,7 +419,8 @@ body.dark-theme {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 480px;
+    min-height: 320px;
+    max-height: 60vh;
 }
 
 .video-wrapper img {
@@ -461,6 +464,8 @@ body.dark-theme {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
 }
 
 .mode-badge {
@@ -472,9 +477,18 @@ body.dark-theme {
     font-weight: 600;
 }
 
+.control-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
 .control-right {
     display: flex;
-    gap: 8px;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
 }
 
 .btn-control {
@@ -482,13 +496,14 @@ body.dark-theme {
     border: 1px solid var(--border-color);
     color: var(--text-primary);
     border-radius: 4px;
-    padding: 6px 12px;
+    padding: 6px 10px;
     font-size: 11px;
     font-weight: 600;
     display: flex;
     align-items: center;
     gap: 6px;
     cursor: pointer;
+    white-space: nowrap;
     transition: all 0.2s;
 }
 
@@ -504,6 +519,16 @@ body.dark-theme {
 
 .btn-control.primary:hover {
     background-color: var(--accent-blue-hover);
+}
+
+.btn-control.capture-save-gold {
+    background-color: #d97706;
+    border-color: #b45309;
+    color: #ffffff;
+}
+
+.btn-control.capture-save-gold:hover {
+    background-color: #b45309;
 }
 
 /* ==========================================================================
@@ -1266,4 +1291,28 @@ legend {
     background-color: #1e3a8a;
     color: #bfdbfe;
 }
+
+/* ==========================================================================
+   RESPONSIVE MEDIA QUERIES
+   Ensures buttons and controls remain fully visible on all screen sizes
+   ========================================================================== */
+@media (max-width: 1400px) {
+    .app-container {
+        grid-template-columns: 220px 1fr 340px;
+    }
+}
+
+@media (max-width: 1200px) {
+    .app-container {
+        grid-template-columns: 200px 1fr 320px;
+    }
+    .top-stream-bar, .stream-controls-bar {
+        padding: 6px 10px;
+    }
+    .btn-control {
+        padding: 5px 8px;
+        font-size: 10.5px;
+    }
+}
+
 

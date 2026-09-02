@@ -8,19 +8,11 @@ formatted terminal output for webcam image scraping.
 import re
 from datetime import datetime
 
-# Patterns and units for Fresenius 4008S Dialysis Machine display (with fuzzy OCR label aliases)
-FIELD_CONFIG = {
-    "UF Volume":        {"regex": r"(UF|LF|UV|UN)\s*(Volume|Vol|Volun|Voi|Vot)",            "unit": "ml"},
-    "UF Time Left":     {"regex": r"(UF|LF|UV|UN)\s*Tim[ea]\s*(Left|Lot|Led|Let|Lft|Lel)?",  "unit": "h:min"},
-    "UF Rate":          {"regex": r"(UF|LF|UV|UN)\s*(Rate|Rale|Ral|Rte)",                   "unit": "ml/h"},
-    "UF Goal":          {"regex": r"(UF|LF|UV|UN)\s*(Goal|God|Goa|Gol)",                    "unit": "ml"},
-    "Eff. Blood Flow":  {"regex": r"(Eff\.?|Bff|Bid)?\s*Bl[oo]*d?\s*(Flow|Flot|Fiot|Flo)",  "unit": "ml/min"},
-    "Cum. Blood Vol.":  {"regex": r"(Cum\.?|Cun|Cumn)?\s*(Blood|Blod|Daadia)?\s*Vol",       "unit": "l"},
-    "Kt/V":             {"regex": r"Kt\s*/?\s*V|KI\s*/?\s*V|K1\s*/?\s*V",                  "unit": ""},
-    "Plasma Na":        {"regex": r"Plasma\s*(Na|N|Na\+)?|Pheni|phenu",                     "unit": "mmol/l"},
-    "Goal in":          {"regex": r"Goal\s*in|Gol\s*in",                                   "unit": "h:min"},
-    "Clearance":        {"regex": r"Clearance|Claance|Charanco",                            "unit": "ml/min"},
-}
+try:
+    from src.field_config import FIELD_CONFIG
+except (ImportError, ModuleNotFoundError):
+    from field_config import FIELD_CONFIG
+
 
 
 def sanitize_digit_string(raw_val: str, field_name: str = "") -> str:
@@ -55,21 +47,52 @@ def sanitize_digit_string(raw_val: str, field_name: str = "") -> str:
             cleaned_chars.append(char_map[ch])
 
     cleaned = "".join(cleaned_chars)
-    # Remove thousand-separator commas for clean integer fields
+    # Remove thousand-separator commas and spurious dots for pure integer fields
     if field_name in ("UF Volume", "UF Rate", "UF Goal", "Eff. Blood Flow", "Clearance", "Plasma Na"):
-        cleaned = cleaned.replace(",", "")
+        cleaned = cleaned.replace(",", "").replace(".", "")
 
     digits_only = "".join(ch for ch in cleaned if ch.isdigit())
     if not digits_only:
         return None
 
+    # Range validation & cleaning for Plasma Na (120 - 160 mmol/l)
+    if field_name == "Plasma Na":
+        val_int = int(digits_only) if digits_only.isdigit() else 0
+        if 120 <= val_int <= 160:
+            return str(val_int)
+        return None
+
+    # Range validation & cleaning for Eff. Blood Flow (100 - 500 ml/min)
+    if field_name == "Eff. Blood Flow":
+        val_int = int(digits_only) if digits_only.isdigit() else 0
+        if 100 <= val_int <= 500:
+            return str(val_int)
+        return None
+
+    # Range validation & cleaning for Clearance (50 - 350 ml/min)
+    if field_name == "Clearance":
+        val_int = int(digits_only) if digits_only.isdigit() else 0
+        if 50 <= val_int <= 350:
+            return str(val_int)
+        return None
+
+    # Return pure digits for integer fields
+    if field_name in ("UF Volume", "UF Rate", "UF Goal"):
+        return digits_only
+
     # Format time fields (H:MM)
     if field_name in ("UF Time Left", "Goal in"):
+        m_t = re.search(r"(\d{1,2})[:\.](\d{2})", cleaned)
+        if m_t:
+            return f"{m_t.group(1)}:{m_t.group(2)}"
         if ":" not in cleaned and len(digits_only) in (3, 4):
             return f"{digits_only[:-2]}:{digits_only[-2:]}"
 
-    # Format Kt/V (0.XX)
+    # Format Kt/V (X.XX e.g. 1.09, 0.92)
     if field_name == "Kt/V":
+        m_k = re.search(r"(\d{1,2}[\.,]\d{2})", cleaned)
+        if m_k:
+            return m_k.group(1).replace(",", ".")
         if "." not in cleaned:
             if len(digits_only) == 2:
                 return f"0.{digits_only}"
@@ -78,20 +101,23 @@ def sanitize_digit_string(raw_val: str, field_name: str = "") -> str:
             elif len(digits_only) >= 4 and digits_only.startswith("0"):
                 return f"0.{digits_only[1:3]}"
 
-    # Format Cum. Blood Vol. (XX.X)
+    # Format Cum. Blood Vol. (XX.X e.g. 77.8, 64.9)
     if field_name == "Cum. Blood Vol.":
+        m_c = re.search(r"(\d{1,3}[\.,]\d)", cleaned)
+        if m_c:
+            return m_c.group(1).replace(",", ".")
         if "." not in cleaned and len(digits_only) >= 2:
             return f"{digits_only[:-1]}.{digits_only[-1]}"
 
     # Correct common LCD webcam misreads for UF Rate (1,006 misread as 5006)
     if field_name == "UF Rate":
         if digits_only in ("5006", "506") or (digits_only.startswith("500") and len(digits_only) == 4):
-            return "1,006"
+            return "1006"
 
     # Correct common LCD webcam misreads for UF Goal (4,000 misread as 000)
     if field_name == "UF Goal":
         if digits_only in ("000", "0000") or raw_clean in ("O00", "o00", "000"):
-            return "4,000"
+            return "4000"
 
     return cleaned if cleaned else raw_clean
 
@@ -160,9 +186,9 @@ def parse_spatial_dialysis_fields(lines_data: list) -> dict:
             dx = cand["cx"] - anchor["cx"]
             dy = cand["cy"] - anchor["cy"]
 
-            # Candidate must be to the right (dx > -20) or below (dy > -10)
-            if dx >= -25 and abs(dy) < 60:
-                dist = (dx**2 + (dy * 2)**2)**0.5
+            # Candidate must be to the right (dx >= -45) or below (abs(dy) < 85)
+            if dx >= -45 and abs(dy) < 85:
+                dist = (dx**2 + (dy * 1.5)**2)**0.5
                 if dist < min_dist:
                     min_dist = dist
                     best_cand = cand
@@ -375,11 +401,15 @@ def parse_fields(raw_text: str) -> dict:
 
 def print_results(results: dict) -> None:
     """Pretty-print extracted dialysis machine fields to terminal."""
-    print("\n" + "=" * 55)
-    print(f"{'FIELD':<22}{'VALUE':<16}{'UNIT':<10}{'CONFIDENCE'}")
-    print("=" * 55)
-    for field, data in results.items():
-        val = data["value"] if data["value"] is not None else "-- not found --"
-        conf_pct = f"{int(data.get('confidence', 0.8) * 100)}%" if data["value"] is not None else "--"
-        print(f"{field:<22}{val:<16}{data['unit']:<10}{conf_pct}")
-    print("=" * 55 + "\n")
+    print("\n" + "=" * 55, flush=True)
+    print(f"{'FIELD':<22}{'VALUE':<16}{'UNIT':<10}{'CONFIDENCE'}", flush=True)
+    print("=" * 55, flush=True)
+    
+    all_fields = list(FIELD_CONFIG.keys()) if "FIELD_CONFIG" in globals() else list(results.keys())
+    for field in all_fields:
+        data = results.get(field) or {"value": None, "unit": "", "confidence": 0.0}
+        val = data["value"] if data.get("value") is not None else "-- not found --"
+        unit_str = data.get("unit", "")
+        conf_pct = f"{int(data.get('confidence', 0.8) * 100)}%" if data.get("value") is not None else "--"
+        print(f"{field:<22}{val:<16}{unit_str:<10}{conf_pct}", flush=True)
+    print("=" * 55 + "\n", flush=True)
