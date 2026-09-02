@@ -40,16 +40,23 @@ class UnifiedCameraCapture:
             except Exception:
                 self.picam2 = Picamera2()
 
+            # Try video configuration first (headless safe for FastAPI web servers & background tasks)
             try:
-                config = self.picam2.create_preview_configuration(
-                    main={"size": (width, height), "format": "RGB888"}
-                )
-                self.picam2.configure(config)
-            except Exception:
                 config = self.picam2.create_video_configuration(
                     main={"size": (width, height), "format": "RGB888"}
                 )
                 self.picam2.configure(config)
+            except Exception:
+                try:
+                    config = self.picam2.create_preview_configuration(
+                        main={"size": (width, height), "format": "RGB888"}
+                    )
+                    self.picam2.configure(config)
+                except Exception:
+                    config = self.picam2.create_still_configuration(
+                        main={"size": (width, height), "format": "RGB888"}
+                    )
+                    self.picam2.configure(config)
 
             self.picam2.start()
             time.sleep(0.5)
