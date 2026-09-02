@@ -30,6 +30,17 @@ SAMPLE_IMG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dial
 
 DEFAULT_DEVICES = [
     {
+        "id": "009",
+        "name": "Raspberry Pi IMX477 IR Camera",
+        "ip": "127.0.0.1",
+        "rtsp_url": "0",
+        "mode": "dialysis",
+        "status": "Online",
+        "fps": 30,
+        "extraction_interval": 0.8,
+        "show_boxes": True
+    },
+    {
         "id": "0000200043",
         "name": "Main Vault (Dialysis Screen)",
         "ip": "127.0.0.1",
@@ -48,17 +59,6 @@ DEFAULT_DEVICES = [
         "mode": "dialysis",
         "status": "Online",
         "fps": 25,
-        "extraction_interval": 0.8,
-        "show_boxes": True
-    },
-    {
-        "id": "0000200045",
-        "name": "Lab Camera (Webcam #0)",
-        "ip": "192.168.1.105",
-        "rtsp_url": "0",
-        "mode": "dialysis",
-        "status": "Online",
-        "fps": 30,
         "extraction_interval": 0.8,
         "show_boxes": True
     }
@@ -163,29 +163,27 @@ class CameraWorker:
             try:
                 if is_webcam:
                     cam_id = int(self.rtsp_url)
-                    import sys
-                    backend = cv2.CAP_DSHOW if sys.platform.startswith("win") else (cv2.CAP_V4L2 if sys.platform.startswith("linux") else cv2.CAP_ANY)
-                    cap = cv2.VideoCapture(cam_id, backend)
-                    if not cap or not cap.isOpened():
-                        cap = cv2.VideoCapture(cam_id)
+                    from src.capture import UnifiedCameraCapture
+                    cap = UnifiedCameraCapture(cam_id, width=1280, height=720)
                 else:
                     cam_id = self.rtsp_url
                     cap = cv2.VideoCapture(cam_id)
+                    if cap and cap.isOpened():
+                        try:
+                            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+                            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                        except Exception:
+                            pass
 
                 if cap and cap.isOpened():
-                    try:
-                        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                    except Exception:
-                        pass
-                    self.status = "Online (Live Webcam)" if is_webcam else "Online (RTSP Stream)"
+                    self.status = "Online (Live Camera)" if is_webcam else "Online (RTSP Stream)"
                 else:
                     if not is_webcam:
                         is_synthetic = True
                         self.status = "Online (Simulated RTSP)"
                     else:
-                        self.status = "Connecting Webcam..."
+                        self.status = "Connecting Camera..."
             except BaseException:
                 if not is_webcam:
                     is_synthetic = True
@@ -197,20 +195,17 @@ class CameraWorker:
         while self.running:
             raw_frame = None
 
-            # Continuous re-open loop for physical USB webcams
+            # Continuous re-open loop for physical cameras
             if is_webcam and (cap is None or not cap.isOpened()):
                 now_rec = time.time()
                 if now_rec - last_reconnect_time >= 2.0:
                     last_reconnect_time = now_rec
                     try:
                         cam_id = int(self.rtsp_url)
-                        import sys
-                        backend = cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY
-                        cap = cv2.VideoCapture(cam_id, backend)
-                        if not cap or not cap.isOpened():
-                            cap = cv2.VideoCapture(cam_id)
+                        from src.capture import UnifiedCameraCapture
+                        cap = UnifiedCameraCapture(cam_id, width=1280, height=720)
                         if cap and cap.isOpened():
-                            self.status = "Online (Live Webcam)"
+                            self.status = "Online (Live Camera)"
                     except Exception:
                         pass
 
@@ -220,7 +215,7 @@ class CameraWorker:
                     if ret and frame is not None and frame.size > 0:
                         raw_frame = frame
                         reconnect_attempts = 0
-                        self.status = "Online (Live Webcam)" if is_webcam else "Online (RTSP Stream)"
+                        self.status = "Online (Live Camera)" if is_webcam else "Online (RTSP Stream)"
                     else:
                         reconnect_attempts += 1
                         time.sleep(0.05)

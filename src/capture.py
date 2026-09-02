@@ -11,6 +11,92 @@ import time
 import sys
 
 
+class UnifiedCameraCapture:
+    """
+    Unified camera wrapper that automatically tries Picamera2 (Raspberry Pi IMX477 IR Camera)
+    and seamlessly falls back to OpenCV VideoCapture (Windows / USB Webcams).
+    """
+
+    def __init__(self, camera_index: int = 0, width: int = 1280, height: int = 720):
+        self.camera_index = camera_index
+        self.width = width
+        self.height = height
+        self.picam2 = None
+        self.cap = None
+        self.is_picamera = False
+
+        # 1. Try Picamera2 (Primary hardware stack for Raspberry Pi 4 + IMX477 Camera)
+        try:
+            from picamera2 import Picamera2
+            self.picam2 = Picamera2()
+            config = self.picam2.create_preview_configuration(
+                main={
+                    "size": (width, height),
+                    "format": "RGB888"
+                }
+            )
+            self.picam2.configure(config)
+            self.picam2.start()
+            time.sleep(0.5)
+            self.is_picamera = True
+            print(f"[Camera] Initialized via Picamera2 (Raspberry Pi IMX477 #{camera_index})", flush=True)
+        except Exception as err:
+            self.picam2 = None
+            self.is_picamera = False
+
+        # 2. Fallback to OpenCV VideoCapture
+        if not self.is_picamera:
+            backend = _get_backend()
+            self.cap = cv2.VideoCapture(camera_index, backend)
+            if not self.cap or not self.cap.isOpened():
+                self.cap = cv2.VideoCapture(camera_index)
+
+            if self.cap and self.cap.isOpened():
+                try:
+                    self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                except Exception:
+                    pass
+                print(f"[Camera] Initialized via OpenCV VideoCapture (#{camera_index})", flush=True)
+
+    def isOpened(self) -> bool:
+        if self.is_picamera:
+            return self.picam2 is not None
+        return self.cap is not None and self.cap.isOpened()
+
+    def read(self):
+        """Returns tuple (ret: bool, frame: np.ndarray in BGR format)."""
+        if self.is_picamera and self.picam2 is not None:
+            try:
+                frame_rgb = self.picam2.capture_array()
+                if frame_rgb is not None and frame_rgb.size > 0:
+                    frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+                    return True, frame_bgr
+            except Exception:
+                return False, None
+        elif self.cap is not None and self.cap.isOpened():
+            return self.cap.read()
+        return False, None
+
+    def release(self):
+        if self.is_picamera and self.picam2 is not None:
+            try:
+                self.picam2.stop()
+                self.picam2.close()
+            except Exception:
+                pass
+            self.picam2 = None
+            self.is_picamera = False
+
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+
+
 def _get_backend():
     """Return platform-appropriate OpenCV VideoCapture backend (V4L2 on Linux/Raspberry Pi, DSHOW on Windows)."""
     if sys.platform.startswith("win"):
@@ -23,27 +109,24 @@ def _get_backend():
 def discover_camera_details(max_tested: int = 5) -> list:
     """Detect available hardware camera devices and return rich metadata."""
     cameras = []
-    backend = _get_backend()
     for idx in range(max_tested):
         try:
-            cap = cv2.VideoCapture(idx, backend)
-            if not cap.isOpened():
-                cap = cv2.VideoCapture(idx)
-
-            if cap.isOpened():
-                ret, frame = cap.read()
+            cam = UnifiedCameraCapture(idx, width=1280, height=720)
+            if cam.isOpened():
+                ret, frame = cam.read()
                 if ret and frame is not None:
                     h, w = frame.shape[:2]
-                    label = "IMX477 IR Camera / Webcam #0" if idx == 0 else f"Attached Camera #{idx}"
+                    cam_type = "Picamera2 IMX477" if cam.is_picamera else "USB/Built-in Webcam"
+                    label = f"Camera #{idx} ({cam_type} {w}x{h})"
                     cameras.append({
                         "index": idx,
                         "id": str(idx),
-                        "label": f"{label} ({w}x{h})",
-                        "name": label,
+                        "label": label,
+                        "name": f"Camera #{idx} ({cam_type})",
                         "resolution": f"{w}x{h}",
                         "rtsp_url": str(idx)
                     })
-                cap.release()
+                cam.release()
         except Exception:
             pass
     return cameras
@@ -55,39 +138,29 @@ def find_available_cameras(max_tested: int = 5) -> list:
     return [c["index"] for c in cams] if cams else [0]
 
 
-
 def capture_from_webcam(camera_index: int = 0, num_frames: int = 1) -> list:
     """
-    Opens an interactive webcam GUI window.
-    When SPACE/c is pressed, captures 1 crisp HD frame for instant high-speed OCR.
+    Opens an interactive webcam GUI window using UnifiedCameraCapture.
+    When SPACE/c is pressed, captures HD frames for instant high-speed OCR.
     """
-    backend = _get_backend()
-    cap = cv2.VideoCapture(camera_index, backend)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(camera_index)
-
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open webcam at index {camera_index}. Check camera connection.")
-
-    # Request HD 1080p resolution for high OCR clarity with MJPG codec
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+    cam = UnifiedCameraCapture(camera_index, width=1920, height=1080)
+    if not cam.isOpened():
+        raise RuntimeError(f"Could not open camera at index {camera_index}. Check hardware connection.")
 
     window_name = "Webcam Extractor - [SPACE/C] Capture 3-Frame Burst | [Q] Quit"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, 800, 600)
 
-    print("\nWebcam preview active.")
+    print("\nCamera preview active.")
     print(" -> Press 'SPACE' or 'c' to CAPTURE a 3-frame burst for maximum accuracy.")
     print(" -> Press 'q' or 'ESC' to cancel.\n")
 
     captured_frames = []
     try:
         while True:
-            ret, live_frame = cap.read()
-            if not ret:
-                print("Warning: Failed to read frame from webcam.")
+            ret, live_frame = cam.read()
+            if not ret or live_frame is None:
+                print("Warning: Failed to read frame from camera.")
                 time.sleep(0.1)
                 continue
 
@@ -111,7 +184,7 @@ def capture_from_webcam(camera_index: int = 0, num_frames: int = 1) -> list:
             if key in (ord('c'), ord('C'), 32):  # 'c' or SPACE
                 print(f"Capturing {num_frames} frames over 1.5 seconds for multi-frame accuracy...")
                 for idx in range(num_frames):
-                    ret_b, burst_frame = cap.read()
+                    ret_b, burst_frame = cam.read()
                     if ret_b and burst_frame is not None:
                         captured_frames.append(burst_frame)
 
@@ -132,10 +205,10 @@ def capture_from_webcam(camera_index: int = 0, num_frames: int = 1) -> list:
                 print(f"Successfully captured {len(captured_frames)} burst frames!")
                 break
             elif key in (ord('q'), ord('Q'), 27):  # 'q' or ESC
-                print("Webcam capture cancelled by user.")
+                print("Camera capture cancelled by user.")
                 break
     finally:
-        cap.release()
+        cam.release()
         cv2.destroyAllWindows()
 
     return captured_frames if captured_frames else []
@@ -146,66 +219,50 @@ def capture_headless(camera_index: int = 0, num_frames: int = 3, warmup_frames: 
     Non-interactive automatic capture without GUI window.
     Captures `num_frames` automatically in ~1.5 seconds.
     """
-    backend = _get_backend()
-    cap = cv2.VideoCapture(camera_index, backend)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(camera_index)
-
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open webcam at index {camera_index}")
+    cam = UnifiedCameraCapture(camera_index, width=1280, height=720)
+    if not cam.isOpened():
+        raise RuntimeError(f"Could not open camera at index {camera_index}")
 
     frames = []
     try:
         # Allow auto-exposure and auto-focus to settle
         for _ in range(warmup_frames):
-            cap.read()
+            cam.read()
             time.sleep(0.03)
 
         for _ in range(num_frames):
-            ret, frame = cap.read()
+            ret, frame = cam.read()
             if ret and frame is not None:
                 frames.append(frame)
             time.sleep(0.5)
 
         return frames
     finally:
-        cap.release()
+        cam.release()
 
 
 def capture_live_stream(camera_index: int = 0, process_fn=None, frame_interval: float = 1.0):
     """
-    Continuous live webcam scraping mode.
-    Runs OCR on webcam frames every `frame_interval` seconds and calls `process_fn(frame)`.
+    Continuous live camera scraping mode using UnifiedCameraCapture.
+    Runs OCR on camera frames every `frame_interval` seconds and calls `process_fn(frame)`.
     Press 'q' in the window to stop live streaming.
     """
-    backend = _get_backend()
-    cap = cv2.VideoCapture(camera_index, backend)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(camera_index)
+    cam = UnifiedCameraCapture(camera_index, width=1280, height=720)
+    if not cam.isOpened():
+        raise RuntimeError(f"Could not open camera at index {camera_index}")
 
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open webcam at index {camera_index}")
-
-    # Set camera resolution to HD 1280x720 with MJPG for sharp OCR readability
-    try:
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-    except Exception:
-        pass
-
-    window_name = "Live Webcam Data Extractor - [Q] Stop Stream"
+    window_name = "Live Camera Data Extractor - [Q] Stop Stream"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, 800, 600)
 
-    print("\nStarting Live Webcam OCR Stream...")
+    print("\nStarting Live Camera OCR Stream...")
     print("Press 'q' or ESC in the preview window to exit live mode.\n")
 
     last_process_time = 0.0
 
     try:
         while True:
-            ret, frame = cap.read()
+            ret, frame = cam.read()
             if not ret or frame is None:
                 time.sleep(0.05)
                 continue
@@ -232,8 +289,8 @@ def capture_live_stream(camera_index: int = 0, process_fn=None, frame_interval: 
 
             key = cv2.waitKey(20) & 0xFF
             if key in (ord('q'), ord('Q'), 27):
-                print("Live webcam stream stopped.")
+                print("Live camera stream stopped.")
                 break
     finally:
-        cap.release()
+        cam.release()
         cv2.destroyAllWindows()
