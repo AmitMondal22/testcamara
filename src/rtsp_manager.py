@@ -163,8 +163,8 @@ class CameraWorker:
             try:
                 if is_webcam:
                     cam_id = int(self.rtsp_url)
-                    from src.capture import UnifiedCameraCapture
-                    cap = UnifiedCameraCapture(cam_id, width=1280, height=720)
+                    from src.capture import get_unified_camera
+                    cap = get_unified_camera(cam_id, width=1280, height=720)
                 else:
                     cam_id = self.rtsp_url
                     cap = cv2.VideoCapture(cam_id)
@@ -202,8 +202,8 @@ class CameraWorker:
                     last_reconnect_time = now_rec
                     try:
                         cam_id = int(self.rtsp_url)
-                        from src.capture import UnifiedCameraCapture
-                        cap = UnifiedCameraCapture(cam_id, width=1280, height=720)
+                        from src.capture import get_unified_camera
+                        cap = get_unified_camera(cam_id, width=1280, height=720)
                         if cap and cap.isOpened():
                             self.status = "Online (Live Camera)"
                     except Exception:

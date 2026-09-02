@@ -11,10 +11,16 @@ import time
 import sys
 
 
+import threading
+
+_CAMERA_SINGLETONS = {}
+_CAMERA_LOCK = threading.Lock()
+
+
 class UnifiedCameraCapture:
     """
     Unified camera wrapper that automatically tries Picamera2 (Raspberry Pi IMX477 IR Camera)
-    and seamlessly falls back to OpenCV VideoCapture (Windows / USB Webcams).
+    and seamlessly falls back to OpenCV VideoCapture (Windows / USB Webcams / GStreamer).
     """
 
     def __init__(self, camera_index: int = 0, width: int = 1280, height: int = 720):
@@ -27,27 +33,46 @@ class UnifiedCameraCapture:
 
         # 1. Try Picamera2 (Primary hardware stack for Raspberry Pi 4 + IMX477 Camera)
         try:
+            # pyrefly: ignore [missing-import]
             from picamera2 import Picamera2
-            self.picam2 = Picamera2()
-            config = self.picam2.create_preview_configuration(
-                main={
-                    "size": (width, height),
-                    "format": "RGB888"
-                }
-            )
-            self.picam2.configure(config)
+            try:
+                self.picam2 = Picamera2(camera_num=camera_index)
+            except Exception:
+                self.picam2 = Picamera2()
+
+            try:
+                config = self.picam2.create_preview_configuration(
+                    main={"size": (width, height), "format": "RGB888"}
+                )
+                self.picam2.configure(config)
+            except Exception:
+                config = self.picam2.create_video_configuration(
+                    main={"size": (width, height), "format": "RGB888"}
+                )
+                self.picam2.configure(config)
+
             self.picam2.start()
             time.sleep(0.5)
             self.is_picamera = True
             print(f"[Camera] Initialized via Picamera2 (Raspberry Pi IMX477 #{camera_index})", flush=True)
         except Exception as err:
+            print(f"[Camera Note] Picamera2 init note ({err}). Trying OpenCV fallback...", flush=True)
             self.picam2 = None
             self.is_picamera = False
 
-        # 2. Fallback to OpenCV VideoCapture
+        # 2. Fallback to OpenCV VideoCapture (GStreamer / V4L2)
         if not self.is_picamera:
-            backend = _get_backend()
-            self.cap = cv2.VideoCapture(camera_index, backend)
+            if sys.platform.startswith("linux"):
+                try:
+                    gst_pipeline = f"libcamerasrc ! video/x-raw, width={width}, height={height} ! videoconvert ! appsink"
+                    self.cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+                except Exception:
+                    self.cap = None
+
+            if self.cap is None or not self.cap.isOpened():
+                backend = _get_backend()
+                self.cap = cv2.VideoCapture(camera_index, backend)
+
             if not self.cap or not self.cap.isOpened():
                 self.cap = cv2.VideoCapture(camera_index)
 
@@ -97,6 +122,17 @@ class UnifiedCameraCapture:
             self.cap = None
 
 
+def get_unified_camera(camera_index: int = 0, width: int = 1280, height: int = 720) -> UnifiedCameraCapture:
+    """Thread-safe singleton getter to prevent multiple Picamera2 instances from locking camera hardware on Raspberry Pi."""
+    global _CAMERA_SINGLETONS
+    with _CAMERA_LOCK:
+        cam = _CAMERA_SINGLETONS.get(camera_index)
+        if cam is None or not cam.isOpened():
+            cam = UnifiedCameraCapture(camera_index, width, height)
+            _CAMERA_SINGLETONS[camera_index] = cam
+        return cam
+
+
 def _get_backend():
     """Return platform-appropriate OpenCV VideoCapture backend (V4L2 on Linux/Raspberry Pi, DSHOW on Windows)."""
     if sys.platform.startswith("win"):
@@ -111,7 +147,7 @@ def discover_camera_details(max_tested: int = 5) -> list:
     cameras = []
     for idx in range(max_tested):
         try:
-            cam = UnifiedCameraCapture(idx, width=1280, height=720)
+            cam = get_unified_camera(idx, width=1280, height=720)
             if cam.isOpened():
                 ret, frame = cam.read()
                 if ret and frame is not None:
@@ -126,7 +162,6 @@ def discover_camera_details(max_tested: int = 5) -> list:
                         "resolution": f"{w}x{h}",
                         "rtsp_url": str(idx)
                     })
-                cam.release()
         except Exception:
             pass
     return cameras
