@@ -12,7 +12,6 @@ let pressureChartCtx = null;
 document.addEventListener("DOMContentLoaded", () => {
     initChart();
     loadDevices();
-    discoverHardwareCameras();
     startClockTimer();
     restoreSidebarPreferences();
 
@@ -179,10 +178,14 @@ function updateActiveDeviceUI() {
     const dev = devices.find(d => d.id === activeDeviceId);
     if (!dev) return;
 
-    document.getElementById("info-device-id").textContent = dev.id;
-    document.getElementById("info-device-name").textContent = dev.name;
-    document.getElementById("info-device-rtsp").textContent = dev.rtsp_url;
-    document.getElementById("info-device-rtsp-box").textContent = `URL${dev.rtsp_url} TypeRTSP Connection`;
+    const elId = document.getElementById("info-device-id");
+    if (elId) elId.textContent = dev.id;
+    const elName = document.getElementById("info-device-name");
+    if (elName) elName.textContent = dev.name;
+    const elRtsp = document.getElementById("info-device-rtsp");
+    if (elRtsp) elRtsp.textContent = dev.rtsp_url;
+    const elRtspBox = document.getElementById("info-device-rtsp-box");
+    if (elRtspBox) elRtspBox.textContent = `URL${dev.rtsp_url} TypeRTSP Connection`;
 
     const statusPill = document.getElementById("info-device-status");
     if (statusPill) {

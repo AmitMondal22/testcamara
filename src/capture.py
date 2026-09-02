@@ -32,40 +32,41 @@ class UnifiedCameraCapture:
         self.is_picamera = False
 
         # 1. Try Picamera2 (Primary hardware stack for Raspberry Pi 4 + IMX477 Camera)
-        try:
-            # pyrefly: ignore [missing-import]
-            from picamera2 import Picamera2
+        if not sys.platform.startswith("win"):
             try:
-                self.picam2 = Picamera2(camera_num=camera_index)
-            except Exception:
-                self.picam2 = Picamera2()
+                # pyrefly: ignore [missing-import]
+                from picamera2 import Picamera2
+                try:
+                    self.picam2 = Picamera2(camera_num=camera_index)
+                except Exception:
+                    self.picam2 = Picamera2()
 
-            # Try video configuration first (headless safe for FastAPI web servers & background tasks)
-            try:
-                config = self.picam2.create_video_configuration(
-                    main={"size": (width, height), "format": "RGB888"}
-                )
-                self.picam2.configure(config)
-            except Exception:
+                # Configure preview configuration (1280x720 RGB888 for Raspberry Pi IMX477)
                 try:
                     config = self.picam2.create_preview_configuration(
                         main={"size": (width, height), "format": "RGB888"}
                     )
                     self.picam2.configure(config)
                 except Exception:
-                    config = self.picam2.create_still_configuration(
-                        main={"size": (width, height), "format": "RGB888"}
-                    )
-                    self.picam2.configure(config)
+                    try:
+                        config = self.picam2.create_video_configuration(
+                            main={"size": (width, height), "format": "RGB888"}
+                        )
+                        self.picam2.configure(config)
+                    except Exception:
+                        config = self.picam2.create_still_configuration(
+                            main={"size": (width, height), "format": "RGB888"}
+                        )
+                        self.picam2.configure(config)
 
-            self.picam2.start()
-            time.sleep(0.5)
-            self.is_picamera = True
-            print(f"[Camera] Initialized via Picamera2 (Raspberry Pi IMX477 #{camera_index})", flush=True)
-        except Exception as err:
-            print(f"[Camera Note] Picamera2 init note ({err}). Trying OpenCV fallback...", flush=True)
-            self.picam2 = None
-            self.is_picamera = False
+                self.picam2.start()
+                time.sleep(1.0)
+                self.is_picamera = True
+                print(f"[Camera] Initialized via Picamera2 (Raspberry Pi IMX477 #{camera_index})", flush=True)
+            except Exception as err:
+                print(f"[Camera Note] Picamera2 init note ({err}). Trying OpenCV fallback...", flush=True)
+                self.picam2 = None
+                self.is_picamera = False
 
         # 2. Fallback to OpenCV VideoCapture (GStreamer / V4L2)
         if not self.is_picamera:
