@@ -104,12 +104,16 @@ class UnifiedCameraCapture:
             try:
                 frame_rgb = self.picam2.capture_array()
                 if frame_rgb is not None and frame_rgb.size > 0:
-                    frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+                    # Make explicit heap copy to avoid DMA buffer recycling SIGBUS
+                    frame_bgr = cv2.cvtColor(np.ascontiguousarray(frame_rgb.copy()), cv2.COLOR_RGB2BGR)
                     return True, frame_bgr
             except Exception:
                 return False, None
         elif self.cap is not None and self.cap.isOpened():
-            return self.cap.read()
+            ret, frame = self.cap.read()
+            if ret and frame is not None:
+                return True, np.ascontiguousarray(frame.copy())
+            return ret, frame
         return False, None
 
     def release(self):

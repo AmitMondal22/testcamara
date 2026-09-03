@@ -67,13 +67,26 @@ image-to-extraction/
 
 ## ⚙️ Setup & Installation
 
-Install the required Python dependencies:
+### Option A: Raspberry Pi 4 (Raspberry Pi OS / Linux)
+On Raspberry Pi OS (Debian Bookworm/Bullseye), `picamera2` is installed via system APT package. When creating your Python virtual environment, you **MUST enable `--system-site-packages`** so `venv` can access `picamera2`:
 
 ```bash
+# 1. Install system APT packages
+sudo apt update
+sudo apt install -y python3-picamera2 python3-opencv tesseract-ocr python3-pip python3-venv
+
+# 2. Create virtual environment with system site packages enabled
+python3 -m venv .venv --system-site-packages
+source .venv/bin/activate
+
+# 3. Install project web & OCR requirements
 pip install -r requirements.txt
 ```
 
-*(Note: EasyOCR runs out of the box in Python. No external C++ software downloads are required!)*
+### Option B: Windows PC (Development)
+```bash
+pip install -r requirements.txt
+```
 
 ---
 

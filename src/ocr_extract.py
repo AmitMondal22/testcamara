@@ -19,6 +19,8 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 try:
      # pyrefly: ignore [missing-import]
     import torch
+    # Set PyTorch sharing strategy to file_system to prevent /dev/shm shared memory Bus Errors (SIGBUS)
+    torch.multiprocessing.set_sharing_strategy('file_system')
 except Exception:
     pass
 
@@ -214,6 +216,7 @@ def extract_image_data(img: np.ndarray, engine: str = "auto", unwarp: bool = Fal
 
     if use_tesseract:
         try:
+            # pyrefly: ignore [missing-import]
             import pytesseract
             gray_proc = cv2.cvtColor(scaled_img, cv2.COLOR_BGR2GRAY) if len(scaled_img.shape) == 3 else scaled_img
             clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
@@ -255,6 +258,7 @@ def extract_image_data(img: np.ndarray, engine: str = "auto", unwarp: bool = Fal
     try:
         reader = _get_easyocr_reader()
         rgb_raw = cv2.cvtColor(scaled_img, cv2.COLOR_BGR2RGB) if (len(scaled_img.shape) == 3 and scaled_img.shape[2] == 3) else scaled_img
+        rgb_raw = np.ascontiguousarray(rgb_raw)
         results = reader.readtext(rgb_raw, canvas_size=960, detail=1)
 
         seen_entries = set()
