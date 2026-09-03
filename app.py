@@ -31,8 +31,8 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 app = FastAPI(
-    title="Vision Scraper - RTSP Multi-Camera Image Data Extraction",
-    description="FastAPI Web UI with Jinja2, RTSP stream management, camera discovery, and real-time screen OCR extraction.",
+    title="Vision Scraper - Raspberry Pi Camera Live Data Extraction",
+    description="FastAPI Web UI for Raspberry Pi onboard camera streaming and real-time screen OCR extraction.",
     version="1.0.0"
 )
 
@@ -48,7 +48,7 @@ class DeviceConfigModel(BaseModel):
     id: str
     name: str
     ip: Optional[str] = "127.0.0.1"
-    rtsp_url: str
+    camera_source: Optional[str] = "0"
     mode: Optional[str] = "dialysis"
     extraction_interval: Optional[float] = 1.5
     show_boxes: Optional[bool] = True
@@ -164,18 +164,6 @@ async def trigger_manual_extraction(device_id: str):
     return data
 
 
-@app.post("/api/validate-rtsp")
-async def validate_rtsp_url(payload: dict):
-    """Tests RTSP stream URL connectivity."""
-    url = payload.get("rtsp_url", "")
-    return {
-        "valid": True,
-        "rtsp_url": url,
-        "latency_ms": 38,
-        "status": "Stream Accessible"
-    }
-
-
 @app.get("/api/cameras/discover")
 async def discover_hardware_cameras():
     """Scans and discovers connected local webcam hardware (Laptop built-in & attached USB cameras)."""
@@ -229,4 +217,4 @@ if __name__ == "__main__":
     print(" Click or Open in Browser: http://127.0.0.1:8000")
     print("                           or: http://localhost:8000")
     print("=" * 65)
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)

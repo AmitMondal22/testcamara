@@ -50,7 +50,7 @@ class CameraWorker:
         self.config = device_config
         self.device_id = device_config["id"]
         self.name = device_config.get("name", f"Camera-{self.device_id}")
-        self.rtsp_url = str(device_config.get("rtsp_url", "0")).strip()
+        self.rtsp_url = str(device_config.get("camera_source", device_config.get("rtsp_url", "0"))).strip()
         self.mode = device_config.get("mode", "dialysis")
         self.extraction_interval = float(device_config.get("extraction_interval", 1.5))
         self.show_boxes = device_config.get("show_boxes", True)
@@ -93,13 +93,12 @@ class CameraWorker:
         self.sim_tick = 0
 
     def _load_synthetic_base(self):
-        if os.path.exists(SAMPLE_IMG_PATH):
-            img = cv2.imread(SAMPLE_IMG_PATH)
-            if img is not None:
-                return img
-        # Create fallback dark frame
+        # Create clear dark standby frame
         img = np.zeros((720, 1280, 3), dtype=np.uint8)
-        cv2.putText(img, "RTSP CAMERA FEED", (400, 360), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)
+        img[:] = (20, 24, 32)
+        cv2.putText(img, "NO LIVE CAMERA SIGNAL", (420, 320), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 120, 255), 2, cv2.LINE_AA)
+        cv2.putText(img, "Connecting to Raspberry Pi Camera (Picamera2 / /dev/video*)...", (320, 380), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 180, 180), 1, cv2.LINE_AA)
+        cv2.putText(img, "Please ensure camera ribbon/USB is firmly attached", (360, 430), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (140, 140, 140), 1, cv2.LINE_AA)
         return img
 
     def start(self):
@@ -114,19 +113,11 @@ class CameraWorker:
             self.thread.join(timeout=1.0)
 
     def _generate_synthetic_frame(self) -> np.ndarray:
-        """Generates dynamic live camera stream of dialysis monitor with ticking clock & realistic variation."""
-        frame = self.base_synthetic.copy()
-        self.sim_tick += 1
-
-        # Draw RTSP timestamp overlay on top-left of camera frame matching input_file_0.png
+        """Generates standby screen with live timestamp while waiting for physical camera."""
+        frame = self._load_synthetic_base()
         now_str = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
-        ipc_text = f"IPC  {now_str}"
-        cv2.putText(frame, ipc_text, (25, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (240, 240, 240), 2, cv2.LINE_AA)
-
-        # Subtle noise / lighting shimmer to simulate real camera feed
-        noise = np.random.randint(-3, 4, frame.shape, dtype=np.int16)
-        frame_noisy = np.clip(frame.astype(np.int16) + noise, 0, 255).astype(np.uint8)
-        return frame_noisy
+        cv2.putText(frame, f"Raspberry Pi Board Time: {now_str}", (40, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA)
+        return frame
 
     def _worker_loop(self):
         cap = None
@@ -212,6 +203,8 @@ class CameraWorker:
                     reconnect_attempts += 1
                     time.sleep(0.05)
 
+            is_live_capture = (raw_frame is not None)
+
             if raw_frame is None:
                 raw_frame = self._generate_synthetic_frame()
 
@@ -221,16 +214,16 @@ class CameraWorker:
             
             # Bottom status banner
             cv2.rectangle(annotated, (0, h - 25), (w, h), (15, 18, 24), -1)
-            cv2.putText(annotated, f"Live (Stream) - {self.name} [{self.device_id}]", (w // 2 - 140, h - 7),
+            cv2.putText(annotated, f"Live Camera - {self.name} [{self.device_id}]", (w // 2 - 140, h - 7),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
 
             with self.lock:
                 self.current_frame = raw_frame
                 self.annotated_frame = annotated
 
-            # Perform non-blocking OCR extraction if interval elapsed
+            # Perform non-blocking OCR extraction ONLY on real live camera frames
             now = time.time()
-            if not self.ocr_busy and (now - self.last_extraction_time >= self.extraction_interval):
+            if is_live_capture and not self.ocr_busy and (now - self.last_extraction_time >= self.extraction_interval):
                 self.last_extraction_time = now
                 self.ocr_busy = True
                 ocr_frame = raw_frame.copy()
@@ -308,12 +301,12 @@ class CameraWorker:
                     extracted_snapshot["pressure_history"] = self.pressure_history
                     self.extracted_data = extracted_snapshot
 
-                # Print RTSP LIVE OCR telemetry log to console
+                # Print PI CAMERA LIVE OCR telemetry log to console
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 print("=" * 65, flush=True)
-                print(f"[RTSP LIVE OCR] Camera: '{self.name}' (ID: {self.device_id})", flush=True)
-                print(f"[RTSP LIVE OCR] Time  : {now_str}", flush=True)
-                print(f"[RTSP LIVE OCR] Extracted Parameters:", flush=True)
+                print(f"[PI CAMERA LIVE OCR] Camera: '{self.name}' (ID: {self.device_id})", flush=True)
+                print(f"[PI CAMERA LIVE OCR] Time  : {now_str}", flush=True)
+                print(f"[PI CAMERA LIVE OCR] Extracted Parameters:", flush=True)
                 for fname, fval in fields.items():
                     if isinstance(fval, dict):
                         v = fval.get("value") if fval.get("value") is not None else "--"

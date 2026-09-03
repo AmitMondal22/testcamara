@@ -68,30 +68,50 @@ class UnifiedCameraCapture:
                 self.picam2 = None
                 self.is_picamera = False
 
-        # 2. Fallback to OpenCV VideoCapture (GStreamer / V4L2)
+        # 2. Fallback to OpenCV VideoCapture (V4L2 / GStreamer / Direct probing)
         if not self.is_picamera:
-            if sys.platform.startswith("linux"):
-                try:
-                    gst_pipeline = f"libcamerasrc ! video/x-raw, width={width}, height={height} ! videoconvert ! appsink"
-                    self.cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
-                except Exception:
-                    self.cap = None
+            candidate_indices = [camera_index] + [i for i in [0, 1, 2, 3] if i != camera_index]
+            for idx in candidate_indices:
+                # Try direct V4L2 on Linux
+                if sys.platform.startswith("linux"):
+                    try:
+                        self.cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+                        if self.cap and self.cap.isOpened():
+                            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+                            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                            ret, test_f = self.cap.read()
+                            if ret and test_f is not None and test_f.size > 0:
+                                print(f"[Camera] Active Raspberry Pi Camera found on /dev/video{idx} via V4L2", flush=True)
+                                self.camera_index = idx
+                                break
+                            else:
+                                self.cap.release()
+                                self.cap = None
+                    except Exception:
+                        self.cap = None
 
-            if self.cap is None or not self.cap.isOpened():
-                backend = _get_backend()
-                self.cap = cv2.VideoCapture(camera_index, backend)
-
-            if not self.cap or not self.cap.isOpened():
-                self.cap = cv2.VideoCapture(camera_index)
+                # Try generic backend
+                if self.cap is None or not self.cap.isOpened():
+                    backend = _get_backend()
+                    try:
+                        self.cap = cv2.VideoCapture(idx, backend) if backend != cv2.CAP_ANY else cv2.VideoCapture(idx)
+                        if self.cap and self.cap.isOpened():
+                            ret, test_f = self.cap.read()
+                            if ret and test_f is not None and test_f.size > 0:
+                                print(f"[Camera] Active Camera found on Device #{idx}", flush=True)
+                                self.camera_index = idx
+                                break
+                            else:
+                                self.cap.release()
+                                self.cap = None
+                    except Exception:
+                        self.cap = None
 
             if self.cap and self.cap.isOpened():
-                try:
-                    self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-                except Exception:
-                    pass
-                print(f"[Camera] Initialized via OpenCV VideoCapture (#{camera_index})", flush=True)
+                print(f"[Camera] Initialized via OpenCV VideoCapture (#{self.camera_index})", flush=True)
+            else:
+                print(f"[Camera Warning] No active video stream detected on Raspberry Pi camera indices {candidate_indices}", flush=True)
 
     def isOpened(self) -> bool:
         if self.is_picamera:

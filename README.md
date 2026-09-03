@@ -1,6 +1,6 @@
-# RTSP Multi-Camera Vision Scraper & Live Medical Data Extractor
+# Raspberry Pi Camera Vision Scraper & Live Medical Data Extractor
 
-Real-time automated vision scraper and web application server for monitoring **multiple RTSP IP cameras** and **USB webcams** facing medical monitors (such as **Fresenius Medical Care 4008 S** dialysis displays).
+Real-time automated vision scraper and web application server for monitoring **Raspberry Pi onboard cameras** (Picamera2 / IMX477 / CSI ribbon / USB cameras) facing medical monitors (such as **Fresenius Medical Care 4008 S** dialysis displays).
 
 Extracts LCD numerical parameters, structured key-value pairs, and OCR telemetry in real time, serving a live FastAPI dashboard and writing telemetry logs directly to the **terminal console** and **JSON files**.
 

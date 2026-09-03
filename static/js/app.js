@@ -183,9 +183,9 @@ function updateActiveDeviceUI() {
     const elName = document.getElementById("info-device-name");
     if (elName) elName.textContent = dev.name;
     const elRtsp = document.getElementById("info-device-rtsp");
-    if (elRtsp) elRtsp.textContent = dev.rtsp_url;
+    if (elRtsp) elRtsp.textContent = dev.camera_source || dev.rtsp_url || "0";
     const elRtspBox = document.getElementById("info-device-rtsp-box");
-    if (elRtspBox) elRtspBox.textContent = `URL${dev.rtsp_url} TypeRTSP Connection`;
+    if (elRtspBox) elRtspBox.textContent = `Source: ${dev.camera_source || dev.rtsp_url || 'Camera 0'} | Attached Camera Feed`;
 
     const statusPill = document.getElementById("info-device-status");
     if (statusPill) {
@@ -374,12 +374,12 @@ function refreshDevice() {
 }
 
 function openAddDeviceModal() {
-    document.getElementById("modal-title").textContent = "Add RTSP Camera Device";
+    document.getElementById("modal-title").textContent = "Add Camera Device";
     document.getElementById("form-device-id").value = "";
     document.getElementById("form-id-input").value = "";
     document.getElementById("form-id-input").disabled = false;
     document.getElementById("form-name-input").value = "";
-    document.getElementById("form-rtsp-input").value = "";
+    document.getElementById("form-rtsp-input").value = "0";
     document.getElementById("device-modal").style.display = "flex";
 }
 
@@ -392,7 +392,8 @@ function openEditModal() {
     document.getElementById("form-id-input").value = dev.id;
     document.getElementById("form-id-input").disabled = true;
     document.getElementById("form-name-input").value = dev.name;
-    document.getElementById("form-rtsp-input").value = dev.rtsp_url;
+    const inputEl = document.getElementById("form-rtsp-input");
+    if (inputEl) inputEl.value = dev.camera_source || dev.rtsp_url || "0";
     document.getElementById("form-mode-input").value = dev.mode || "dialysis";
     document.getElementById("device-modal").style.display = "flex";
 }
@@ -405,11 +406,13 @@ async function saveDeviceForm(e) {
     e.preventDefault();
     const isEdit = !!document.getElementById("form-device-id").value;
     const devId = document.getElementById("form-id-input").value.trim();
+    const camInput = document.getElementById("form-rtsp-input") ? document.getElementById("form-rtsp-input").value.trim() : "0";
 
     const payload = {
         id: devId,
         name: document.getElementById("form-name-input").value.trim(),
-        rtsp_url: document.getElementById("form-rtsp-input").value.trim(),
+        camera_source: camInput,
+        rtsp_url: camInput,
         mode: document.getElementById("form-mode-input").value,
         extraction_interval: parseFloat(document.getElementById("form-interval-input").value)
     };

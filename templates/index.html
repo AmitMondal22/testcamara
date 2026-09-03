@@ -180,22 +180,22 @@
                             <div class="ocm-grid">
                                 <div class="ocm-cell">
                                     <span class="ocm-label">Kt/V</span>
-                                    <div class="lcd-box" id="val-kt-v">0.76</div>
+                                    <div class="lcd-box" id="val-kt-v">--</div>
                                 </div>
                                 <div class="ocm-cell">
                                     <span class="ocm-label">Plasma Na</span>
                                     <div class="ocm-unit">mmol/l</div>
-                                    <div class="lcd-box" id="val-plasma-na">134</div>
+                                    <div class="lcd-box" id="val-plasma-na">--</div>
                                 </div>
                                 <div class="ocm-cell">
                                     <span class="ocm-label">Goal in</span>
                                     <div class="ocm-unit">h:min</div>
-                                    <div class="lcd-box" id="val-goal-in">1:53</div>
+                                    <div class="lcd-box" id="val-goal-in">--</div>
                                 </div>
                                 <div class="ocm-cell">
                                     <span class="ocm-label">Clearance</span>
                                     <div class="ocm-unit">ml/min</div>
-                                    <div class="lcd-box" id="val-clearance">161</div>
+                                    <div class="lcd-box" id="val-clearance">--</div>
                                 </div>
                             </div>
                         </fieldset>
@@ -219,7 +219,7 @@
                                 <div class="metric-label">UF Volume</div>
                                 <div class="metric-unit">ml</div>
                             </div>
-                            <div class="lcd-box large" id="val-uf-volume">5,581</div>
+                            <div class="lcd-box large" id="val-uf-volume">--</div>
                         </div>
 
                         <div class="metric-row">
@@ -227,7 +227,7 @@
                                 <div class="metric-label">UF Time Left</div>
                                 <div class="metric-unit">h:min</div>
                             </div>
-                            <div class="lcd-box large" id="val-uf-time-left">1:43</div>
+                            <div class="lcd-box large" id="val-uf-time-left">--</div>
                         </div>
 
                         <div class="metric-row">
@@ -235,7 +235,7 @@
                                 <div class="metric-label">UF Rate</div>
                                 <div class="metric-unit">ml/h</div>
                             </div>
-                            <div class="lcd-box large" id="val-uf-rate">946</div>
+                            <div class="lcd-box large" id="val-uf-rate">--</div>
                         </div>
 
                         <div class="metric-row">
@@ -243,7 +243,7 @@
                                 <div class="metric-label">UF Goal</div>
                                 <div class="metric-unit">ml</div>
                             </div>
-                            <div class="lcd-box large" id="val-uf-goal">4,000</div>
+                            <div class="lcd-box large" id="val-uf-goal">--</div>
                         </div>
 
                         <div class="metric-row">
@@ -251,7 +251,7 @@
                                 <div class="metric-label">Eff. Blood Flow</div>
                                 <div class="metric-unit">ml/min</div>
                             </div>
-                            <div class="lcd-box large" id="val-eff-blood-flow">197</div>
+                            <div class="lcd-box large" id="val-eff-blood-flow">--</div>
                         </div>
 
                         <div class="metric-row">
@@ -259,7 +259,7 @@
                                 <div class="metric-label">Cum. Blood Vol</div>
                                 <div class="metric-unit">l</div>
                             </div>
-                            <div class="lcd-box large" id="val-cum-blood-vol">96.2</div>
+                            <div class="lcd-box large" id="val-cum-blood-vol">--</div>
                         </div>
                     </div>
                 </div>
@@ -291,23 +291,23 @@
     <div class="modal-overlay" id="device-modal" style="display: none;">
         <div class="modal-card">
             <div class="modal-header">
-                <h3 id="modal-title">Add RTSP Camera Device</h3>
+                <h3 id="modal-title">Add Camera Device</h3>
                 <button class="close-btn" onclick="closeDeviceModal()">&times;</button>
             </div>
             <form id="device-form" onsubmit="saveDeviceForm(event)">
                 <input type="hidden" id="form-device-id">
                 <div class="form-group">
-                    <label>Camera Device ID / Serial</label>
-                    <input type="text" id="form-id-input" placeholder="e.g. 0000200043" required>
+                    <label>Camera Device ID / Index</label>
+                    <input type="text" id="form-id-input" placeholder="e.g. pi_camera_0" required>
                 </div>
                 <div class="form-group">
                     <label>Camera Name / Location</label>
-                    <input type="text" id="form-name-input" placeholder="e.g. Main Vault - Dialysis Bay" required>
+                    <input type="text" id="form-name-input" placeholder="e.g. Raspberry Pi Attached Camera" required>
                 </div>
                 <div class="form-group">
-                    <label>RTSP Stream URL / Camera Source</label>
+                    <label>Camera Source Index</label>
                     <input type="text" id="form-rtsp-input"
-                        placeholder="rtsp://103.154.106.111:554/profile2 (or 0 for webcam)" required>
+                        placeholder="0 (for default Raspberry Pi IMX477 / USB camera)" required>
                 </div>
                 <div class="form-group">
                     <label>Extraction Mode</label>
