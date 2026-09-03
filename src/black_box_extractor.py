@@ -246,7 +246,7 @@ def _ocr_box_value(frame: np.ndarray, x: int, y: int, w: int, h: int) -> str:
     thresh_rgb = cv2.cvtColor(thresh, cv2.COLOR_GRAY2RGB)
     thresh_rgb = np.ascontiguousarray(thresh_rgb)
 
-    reader = _get_reader()
+    reader = _get_reader() 
     if reader is None: 
         return ""
 
