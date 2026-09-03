@@ -127,10 +127,15 @@ class UnifiedCameraCapture:
             try:
                 frame_rgb = self.picam2.capture_array()
                 if frame_rgb is not None and frame_rgb.size > 0:
+                    self._error_count = 0
                     # Make explicit heap copy to avoid DMA buffer recycling SIGBUS
                     frame_bgr = cv2.cvtColor(np.ascontiguousarray(frame_rgb.copy()), cv2.COLOR_RGB2BGR)
                     return True, frame_bgr
-            except Exception:
+            except Exception as e:
+                self._error_count = getattr(self, "_error_count", 0) + 1
+                if self._error_count > 15:
+                    print(f"[Camera Error] Picamera2 stream timed out ({e}). Releasing for auto-reconnect...", flush=True)
+                    self.release()
                 return False, None
         elif self.cap is not None and self.cap.isOpened():
             ret, frame = self.cap.read()

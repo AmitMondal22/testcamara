@@ -50,7 +50,7 @@ class DeviceConfigModel(BaseModel):
     ip: Optional[str] = "127.0.0.1"
     camera_source: Optional[str] = "0"
     mode: Optional[str] = "dialysis"
-    extraction_interval: Optional[float] = 1.5
+    extraction_interval: Optional[float] = 1.0
     show_boxes: Optional[bool] = True
 
 

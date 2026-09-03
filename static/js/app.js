@@ -15,8 +15,8 @@ document.addEventListener("DOMContentLoaded", () => {
     startClockTimer();
     restoreSidebarPreferences();
 
-    // Live data polling via HTTP REST API
-    setInterval(pollDeviceData, 1500);
+    // Live data polling via HTTP REST API (1 second refresh)
+    setInterval(pollDeviceData, 1000);
 });
 
 function toggleLeftSidebar() {
@@ -362,11 +362,14 @@ function captureSnapshot() {
     window.open(`/api/stream/${activeDeviceId}/snapshot`, "_blank");
 }
 
+/*
+// RTSP stream validation disabled for now
 function validateRTSP() {
     const dev = devices.find(d => d.id === activeDeviceId);
     if (!dev) return;
-    alert(`Validating RTSP Stream for ${dev.name} (${dev.rtsp_url})...\nStatus: Stream Connected Successfully (Latency: 42ms)`);
+    alert(`Validating Camera Stream for ${dev.name}...\\nStatus: Stream Connected Successfully`);
 }
+*/
 
 function refreshDevice() {
     loadDevices();

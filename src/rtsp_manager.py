@@ -37,7 +37,7 @@ DEFAULT_DEVICES = [
         "mode": "dialysis",
         "status": "Online",
         "fps": 30,
-        "extraction_interval": 1.5,
+        "extraction_interval": 1.0,
         "show_boxes": True
     }
 ]
@@ -52,7 +52,7 @@ class CameraWorker:
         self.name = device_config.get("name", f"Camera-{self.device_id}")
         self.rtsp_url = str(device_config.get("camera_source", device_config.get("rtsp_url", "0"))).strip()
         self.mode = device_config.get("mode", "dialysis")
-        self.extraction_interval = float(device_config.get("extraction_interval", 1.5))
+        self.extraction_interval = float(device_config.get("extraction_interval", 1.0))
         self.show_boxes = device_config.get("show_boxes", True)
 
         self.running = False
@@ -146,17 +146,17 @@ class CameraWorker:
                             pass
 
                 if cap and cap.isOpened():
-                    self.status = "Online (Live Camera)" if is_webcam else "Online (RTSP Stream)"
+                    self.status = "Online (Live Camera)" if is_webcam else "Online (Live Stream)"
                 else:
                     if not is_webcam:
                         is_synthetic = True
-                        self.status = "Online (Simulated RTSP)"
+                        self.status = "Online (Simulated)"
                     else:
                         self.status = "Connecting Camera..."
             except BaseException:
                 if not is_webcam:
                     is_synthetic = True
-                    self.status = "Online (Simulated RTSP)"
+                    self.status = "Online (Simulated)"
 
         reconnect_attempts = 0
         last_reconnect_time = 0
@@ -184,7 +184,7 @@ class CameraWorker:
                     if ret and frame is not None and frame.size > 0:
                         raw_frame = frame
                         reconnect_attempts = 0
-                        self.status = "Online (Live Camera)" if is_webcam else "Online (RTSP Stream)"
+                        self.status = "Online (Live Camera)" if is_webcam else "Online (Live Stream)"
                     else:
                         reconnect_attempts += 1
                         time.sleep(0.05)

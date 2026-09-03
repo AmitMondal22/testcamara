@@ -6,7 +6,7 @@
     "mode": "dialysis",
     "status": "Online",
     "fps": 30,
-    "extraction_interval": 1.5,
+    "extraction_interval": 1.0,
     "show_boxes": true
   }
 ]
