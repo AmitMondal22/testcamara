@@ -41,15 +41,15 @@ class UnifiedCameraCapture:
                 except Exception:
                     self.picam2 = Picamera2()
 
-                # Configure preview configuration (1280x720 RGB888 for Raspberry Pi IMX477)
+                # Configure video configuration (1280x720 RGB888 for Raspberry Pi IMX477 / CSI Cameras)
                 try:
-                    config = self.picam2.create_preview_configuration(
+                    config = self.picam2.create_video_configuration(
                         main={"size": (width, height), "format": "RGB888"}
                     )
                     self.picam2.configure(config)
                 except Exception:
                     try:
-                        config = self.picam2.create_video_configuration(
+                        config = self.picam2.create_preview_configuration(
                             main={"size": (width, height), "format": "RGB888"}
                         )
                         self.picam2.configure(config)

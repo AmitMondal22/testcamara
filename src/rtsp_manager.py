@@ -30,36 +30,14 @@ SAMPLE_IMG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dial
 
 DEFAULT_DEVICES = [
     {
-        "id": "009",
-        "name": "Raspberry Pi IMX477 IR Camera",
+        "id": "pi_camera_0",
+        "name": "Raspberry Pi Attached Camera",
         "ip": "127.0.0.1",
         "rtsp_url": "0",
         "mode": "dialysis",
         "status": "Online",
         "fps": 30,
-        "extraction_interval": 0.8,
-        "show_boxes": True
-    },
-    {
-        "id": "0000200043",
-        "name": "Main Vault (Dialysis Screen)",
-        "ip": "127.0.0.1",
-        "rtsp_url": "rtsp://103.154.106.111:554/profile2",
-        "mode": "dialysis",
-        "status": "Online",
-        "fps": 25,
-        "extraction_interval": 0.8,
-        "show_boxes": True
-    },
-    {
-        "id": "0000200044",
-        "name": "ICU Monitor Bay 2",
-        "ip": "192.168.1.102",
-        "rtsp_url": "synthetic://dialysis_2",
-        "mode": "dialysis",
-        "status": "Online",
-        "fps": 25,
-        "extraction_interval": 0.8,
+        "extraction_interval": 1.5,
         "show_boxes": True
     }
 ]
