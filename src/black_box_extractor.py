@@ -154,50 +154,60 @@ def _iou(b1, b2):
 
 def detect_dark_boxes(frame: np.ndarray):
     """
-    Find dark/black LCD value boxes using multi-threshold sweep.
-    Tuned for Fresenius 4008S display: near-pure-black boxes with
-    bright white digits, captured via USB webcam or IMX477 IR camera.
+    Fast detection of dark/black LCD value boxes on Fresenius 4008S screen.
     Returns list of (x, y, w, h) sorted top-to-bottom, left-to-right.
+    Quickly returns empty list when camera is not pointed at the dialysis display.
     """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     h_img, w_img = gray.shape
 
-    # Mild blur to reduce webcam/IR noise without losing box edges
+    # Fast downscaled/blurred check to verify image has sufficient contrast
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
     candidates = []
-    # Sweep thresholds to catch dark boxes even under varying IR / ambient lighting
-    for thresh_val in [20, 30, 45, 65, 90, 115]:
+    # Fast dual threshold sweep (targeted specifically for dark LCD boxes)
+    for thresh_val in [35, 70]:
         _, dark_mask = cv2.threshold(blurred, thresh_val, 255, cv2.THRESH_BINARY_INV)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 6))
-        closed = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 5))
+        closed = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
         contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
             area = w * h
             aspect = w / max(h, 1)
-            # Filter out tiny noise and full-screen containers
-            if area < 500 or area > 0.30 * w_img * h_img:
+
+            # Dialysis LCD box dimension constraints
+            if area < 600 or area > 0.15 * w_img * h_img:
                 continue
-            if aspect < 0.5 or aspect > 12.0:
+            if aspect < 0.8 or aspect > 8.0:
                 continue
-            if w < 18 or h < 10:
+            if w < 25 or h < 12:
                 continue
 
-            # Filter out graph Y-axis tick mark zone (bottom-left graph region) to prevent reading scale label '-300'
+            # Filter out bottom-left graph scale region
             if x < 0.15 * w_img and y > 0.55 * h_img:
+                continue
+
+            # Verify that the interior is genuinely a dark box (mean brightness < 80)
+            crop_gray = gray[y:y+h, x:x+w]
+            if crop_gray.size == 0 or float(np.mean(crop_gray)) > 80.0:
                 continue
 
             candidates.append((x, y, w, h))
 
-    # NMS: remove boxes with IoU > 0.4 with a larger box
+    if len(candidates) < 2:
+        return []
+
+    # NMS: remove overlapping boxes
     candidates.sort(key=lambda b: b[2] * b[3], reverse=True)
     filtered = []
     for box in candidates:
-        dominated = any(_iou(box, kept) > 0.4 for kept in filtered)
+        dominated = any(_iou(box, kept) > 0.35 for kept in filtered)
         if not dominated:
             filtered.append(box)
 
+    # Dialysis machine has exactly 10 LCD boxes - cap candidates to max 10
+    filtered = filtered[:10]
     filtered.sort(key=lambda b: (b[1], b[0]))
     return filtered
 

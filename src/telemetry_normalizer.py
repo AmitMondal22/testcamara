@@ -104,31 +104,34 @@ def sanitize_raw_value(field_name: str, raw_val: str) -> str:
     return val
 
 
-DEFAULT_DIALYSIS_READINGS = {
-    "UF Volume":       {"value": "2380", "unit": "ml", "confidence": 0.95},
-    "UF Time Left":    {"value": "1:34", "unit": "h:min", "confidence": 0.98},
-    "UF Rate":         {"value": "1003", "unit": "ml/h", "confidence": 0.92},
-    "UF Goal":         {"value": "4000", "unit": "ml", "confidence": 0.96},
-    "Eff. Blood Flow": {"value": "216", "unit": "ml/min", "confidence": 0.99},
-    "Cum. Blood Vol.": {"value": "33.0", "unit": "l", "confidence": 0.91},
-    "Kt/V":            {"value": "0.84", "unit": "", "confidence": 0.94},
-    "Plasma Na":       {"value": "134", "unit": "mmol/l", "confidence": 0.97},
-    "Goal in":         {"value": "1:53", "unit": "h:min", "confidence": 0.90},
-    "Clearance":       {"value": "150", "unit": "ml/min", "confidence": 0.95},
-}
-
-
 def apply_temporal_smoothing(device_id: str, fields: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Applies non-destructive sanitization and memory latching.
-    Retains the exact extracted numbers, and holds previous accurate readings
-    if a live webcam frame experiences temporary obstruction.
+    Applies non-destructive sanitization to extracted values.
+    Returns clean extracted numbers only when genuine black boxes are detected.
+    Does NOT fabricate default numbers when no screen is present.
     """
     if device_id not in _DEVICE_LAST_KNOWN:
         _DEVICE_LAST_KNOWN[device_id] = {}
 
     last_known = _DEVICE_LAST_KNOWN[device_id]
     sanitized_fields = {}
+
+    # Check if the current frame found any real values
+    any_found = any(isinstance(v, dict) and v.get("value") for v in fields.values())
+
+    if not any_found:
+        # No boxes/values detected in this frame -> clear latch and return empty
+        _DEVICE_LAST_KNOWN[device_id] = {}
+        for fname, fdict in fields.items():
+            if isinstance(fdict, dict):
+                sanitized_fields[fname] = {
+                    "value": None,
+                    "unit": fdict.get("unit", ""),
+                    "confidence": 0.0
+                }
+            else:
+                sanitized_fields[fname] = fdict
+        return sanitized_fields
 
     for fname, fdict in fields.items():
         if not isinstance(fdict, dict):
@@ -143,21 +146,10 @@ def apply_temporal_smoothing(device_id: str, fields: Dict[str, Any]) -> Dict[str
 
         curr_conf = fdict.get("confidence", 0.0)
 
-        # High-confidence memory latching
         if clean_val:
-            if fname in last_known and curr_conf < 0.70 and last_known[fname].get("confidence", 0.0) >= 0.85:
-                # Retain previous verified high-confidence reading if current read is noisy/low-confidence
-                sanitized_fields[fname] = last_known[fname]
-            else:
-                last_known[fname] = new_fdict
-                sanitized_fields[fname] = new_fdict
+            last_known[fname] = new_fdict
+            sanitized_fields[fname] = new_fdict
         else:
-            # If current frame missed this field, use last known accurate value or fallback default
-            if fname in last_known:
-                sanitized_fields[fname] = last_known[fname]
-            elif fname in DEFAULT_DIALYSIS_READINGS:
-                sanitized_fields[fname] = DEFAULT_DIALYSIS_READINGS[fname]
-            else:
-                sanitized_fields[fname] = new_fdict
+            sanitized_fields[fname] = new_fdict
 
     return sanitized_fields

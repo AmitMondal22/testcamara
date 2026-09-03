@@ -109,16 +109,6 @@ def sanitize_digit_string(raw_val: str, field_name: str = "") -> str:
         if "." not in cleaned and len(digits_only) >= 2:
             return f"{digits_only[:-1]}.{digits_only[-1]}"
 
-    # Correct common LCD webcam misreads for UF Rate (1,006 misread as 5006)
-    if field_name == "UF Rate":
-        if digits_only in ("5006", "506") or (digits_only.startswith("500") and len(digits_only) == 4):
-            return "1006"
-
-    # Correct common LCD webcam misreads for UF Goal (4,000 misread as 000)
-    if field_name == "UF Goal":
-        if digits_only in ("000", "0000") or raw_clean in ("O00", "o00", "000"):
-            return "4000"
-
     return cleaned if cleaned else raw_clean
 
 

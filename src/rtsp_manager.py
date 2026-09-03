@@ -301,21 +301,27 @@ class CameraWorker:
                     extracted_snapshot["pressure_history"] = self.pressure_history
                     self.extracted_data = extracted_snapshot
 
+                found_count = sum(1 for f in fields.values() if isinstance(f, dict) and f.get("value") is not None)
+
                 # Print PI CAMERA LIVE OCR telemetry log to console
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 print("=" * 65, flush=True)
                 print(f"[PI CAMERA LIVE OCR] Camera: '{self.name}' (ID: {self.device_id})", flush=True)
                 print(f"[PI CAMERA LIVE OCR] Time  : {now_str}", flush=True)
-                print(f"[PI CAMERA LIVE OCR] Extracted Parameters:", flush=True)
-                for fname, fval in fields.items():
-                    if isinstance(fval, dict):
-                        v = fval.get("value") if fval.get("value") is not None else "--"
-                        u = fval.get("unit", "")
-                        val_str = f"{v} {u}".strip() if u and v != "--" else str(v)
-                        print(f"   • {fname:<16}: {val_str}", flush=True)
+                if found_count == 0:
+                    print(f"[PI CAMERA LIVE OCR] Status: Unable to find black box (No dialysis screen in frame)", flush=True)
+                else:
+                    print(f"[PI CAMERA LIVE OCR] Extracted Parameters ({found_count}/10 fields detected):", flush=True)
+                    for fname, fval in fields.items():
+                        if isinstance(fval, dict):
+                            v = fval.get("value") if fval.get("value") is not None else "Unable to find black box"
+                            u = fval.get("unit", "")
+                            val_str = f"{v} {u}".strip() if u and v != "Unable to find black box" else str(v)
+                            print(f"   • {fname:<16}: {val_str}", flush=True)
                 print("=" * 65 + "\n", flush=True)
 
-                print_results(fields)
+                if found_count > 0:
+                    print_results(fields)
 
                 try:
                     output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")

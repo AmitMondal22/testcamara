@@ -84,7 +84,7 @@ async def generate_mjpeg_frames(device_id: str):
         if frame_bytes:
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-        await asyncio.sleep(0.033)  # Smooth 30 FPS video stream
+        await asyncio.sleep(0.015)  # Fast 60 FPS video stream loop
 
 
 

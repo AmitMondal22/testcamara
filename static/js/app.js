@@ -221,18 +221,18 @@ function updateExtractedDataDisplay(data) {
         return fallback;
     };
 
-    // Update LCD Screen Value Boxes
-    setLcdText("val-kt-v", getVal("Kt/V", "0.76"));
-    setLcdText("val-plasma-na", getVal("Plasma Na", "134"));
-    setLcdText("val-goal-in", getVal("Goal in", "1:53"));
-    setLcdText("val-clearance", getVal("Clearance", "161"));
+    // Update LCD Screen Value Boxes (display '--' when no black box is in camera view)
+    setLcdText("val-kt-v", getVal("Kt/V", "--"));
+    setLcdText("val-plasma-na", getVal("Plasma Na", "--"));
+    setLcdText("val-goal-in", getVal("Goal in", "--"));
+    setLcdText("val-clearance", getVal("Clearance", "--"));
 
-    setLcdText("val-uf-volume", getVal("UF Volume", "5,581"));
-    setLcdText("val-uf-time-left", getVal("UF Time Left", "1:43"));
-    setLcdText("val-uf-rate", getVal("UF Rate", "946"));
-    setLcdText("val-uf-goal", getVal("UF Goal", "4,000"));
-    setLcdText("val-eff-blood-flow", getVal("Eff. Blood Flow", "197"));
-    setLcdText("val-cum-blood-vol", getVal("Cum. Blood Vol.", "96.2"));
+    setLcdText("val-uf-volume", getVal("UF Volume", "--"));
+    setLcdText("val-uf-time-left", getVal("UF Time Left", "--"));
+    setLcdText("val-uf-rate", getVal("UF Rate", "--"));
+    setLcdText("val-uf-goal", getVal("UF Goal", "--"));
+    setLcdText("val-eff-blood-flow", getVal("Eff. Blood Flow", "--"));
+    setLcdText("val-cum-blood-vol", getVal("Cum. Blood Vol.", "--"));
 
     // Raw OCR log update
     const rawTextEl = document.getElementById("raw-ocr-text");
