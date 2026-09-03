@@ -50,21 +50,24 @@ if hasattr(sys.stdout, "reconfigure"):
 # ─────────────────────────────────────────────────────────────
 _READER = None
 _READER_LOCK = threading.Lock()
+_READER_INITIALIZED = False
 
 
 def _get_reader():
-    global _READER
-    if _READER is not None:
+    global _READER, _READER_INITIALIZED
+    if _READER_INITIALIZED:
         return _READER
     with _READER_LOCK:
-        if _READER is None:
+        if not _READER_INITIALIZED:
+            _READER_INITIALIZED = True
             try:
-                import easyocr  # pyrefly: ignore [missing-import]
+                # pyrefly: ignore [missing-import]
+                import easyocr
                 _READER = easyocr.Reader(["en"], gpu=False, verbose=False)
-                print("[BlackBoxOCR] EasyOCR reader initialized.", flush=True)
-            except Exception as e:
-                print(f"[BlackBoxOCR] EasyOCR init error: {e}", flush=True)
+                print("[BlackBoxOCR] EasyOCR reader initialized successfully.", flush=True)
+            except Exception:
                 _READER = None
+                print("[BlackBoxOCR] EasyOCR not installed. Falling back to high-speed PyTesseract engine.", flush=True)
     return _READER
 
 
@@ -246,41 +249,50 @@ def _ocr_box_value(frame: np.ndarray, x: int, y: int, w: int, h: int) -> str:
     thresh_rgb = cv2.cvtColor(thresh, cv2.COLOR_GRAY2RGB)
     thresh_rgb = np.ascontiguousarray(thresh_rgb)
 
+    raw = ""
     reader = _get_reader() 
-    if reader is None: 
+    if reader is not None:
+        try:
+            with _READER_LOCK:
+                # Primary: digits + punctuation allowlist
+                results = reader.readtext(thresh_rgb, detail=1, allowlist="0123456789.,:-")
+                if not results:
+                    results = reader.readtext(thresh_rgb, detail=1)
+
+            if results:
+                raw = re.sub(r"\s+", "", " ".join(r[1].strip() for r in results))
+        except Exception:
+            pass
+
+    if not raw:
+        try:
+            # pyrefly: ignore [missing-import]
+            import pytesseract
+            tess_cfg = "--psm 7 -c tessedit_char_whitelist=0123456789.,:-"
+            raw = pytesseract.image_to_string(thresh, config=tess_cfg).strip()
+            raw = re.sub(r"\s+", "", raw)
+        except Exception:
+            pass
+
+    if not raw:
         return ""
 
-    try:
-        results = None
-        with _READER_LOCK:
-            # Primary: digits + punctuation allowlist
-            results = reader.readtext(thresh_rgb, detail=1, allowlist="0123456789.,:-")
-            if not results:
-                results = reader.readtext(thresh_rgb, detail=1)
+    # Remove thousand-separator commas: "2,923" → "2923", "2,650" → "2650", "1,046" → "1046"
+    text = re.sub(r"(\d+)[,\s](\d{3})", r"\1\2", raw)
+    text = re.sub(r"(\d),(\d{3})", r"\1\2", text)
 
-        if not results:
-            return ""
+    # Decimal values starting with 0 (Kt/V: 0.88, Cum.Blood Vol.: 38.7)
+    if text.startswith("0.") or text.startswith("0,"):
+        return text.replace(",", ".")
 
-        raw = re.sub(r"\s+", "", " ".join(r[1].strip() for r in results))
+    # Time values: D.DD or D:DD → D:DD (e.g. 1.43 → 1:43, 1.53 → 1:53)
+    m_time = re.match(r"^([0-9]{1,2})[\.:](\d{2})$", text)
+    if m_time:
+        return f"{m_time.group(1)}:{m_time.group(2)}"
 
-        # Remove thousand-separator commas: "2,923" → "2923", "2,650" → "2650", "1,046" → "1046"
-        text = re.sub(r"(\d+)[,\s](\d{3})", r"\1\2", raw)
-        text = re.sub(r"(\d),(\d{3})", r"\1\2", text)
-
-        # Decimal values starting with 0 (Kt/V: 0.88, Cum.Blood Vol.: 38.7)
-        if text.startswith("0.") or text.startswith("0,"):
-            return text.replace(",", ".")
-
-        # Time values: D.DD or D:DD → D:DD (e.g. 1.43 → 1:43, 1.53 → 1:53)
-        m_time = re.match(r"^([0-9]{1,2})[\.:](\d{2})$", text)
-        if m_time:
-            return f"{m_time.group(1)}:{m_time.group(2)}"
-
-        # Strip anything that isn't a digit, dot, or colon
-        cleaned = re.sub(r"[^0-9\.:]", "", text)
-        return cleaned if cleaned else ""
-    except Exception:
-        return ""
+    # Strip anything that isn't a digit, dot, or colon
+    cleaned = re.sub(r"[^0-9\.:]", "", text)
+    return cleaned if cleaned else ""
 
 
 # ─────────────────────────────────────────────────────────────
