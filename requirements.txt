@@ -5,6 +5,7 @@ websockets
 python-multipart
 opencv-python
 pytesseract
-numpy
+numpy<2.0.0
 easyocr
 Pillow
+

@@ -75,7 +75,12 @@ else:
         print(" -> Picamera2 closed cleanly.\n")
 
     except Exception as err:
-        print(f"[2/4] Picamera2 Error: {err}\n")
+        if "numpy.dtype size changed" in str(err):
+            print(f"[2/4] Picamera2 ABI Incompatibility: {err}")
+            print("      --> FIX: Your virtual environment has NumPy 2.x installed. Raspberry Pi Picamera2 requires NumPy 1.x.")
+            print("      --> Run: pip install 'numpy<2.0.0'\n")
+        else:
+            print(f"[2/4] Picamera2 Error: {err}\n")
 
 # 3. Check OpenCV GStreamer / V4L2 fallback
 if not picam2_ok:

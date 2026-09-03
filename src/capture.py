@@ -64,7 +64,10 @@ class UnifiedCameraCapture:
                 self.is_picamera = True
                 print(f"[Camera] Initialized via Picamera2 (Raspberry Pi IMX477 #{camera_index})", flush=True)
             except Exception as err:
-                print(f"[Camera Note] Picamera2 init note ({err}). Trying OpenCV fallback...", flush=True)
+                if "numpy.dtype size changed" in str(err):
+                    print(f"[Camera Error] Picamera2 ABI mismatch: Installed NumPy is incompatible with Raspberry Pi OS Picamera2 binary. Fix by running: pip install 'numpy<2.0.0'", flush=True)
+                else:
+                    print(f"[Camera Note] Picamera2 init note ({err}). Trying OpenCV fallback...", flush=True)
                 self.picam2 = None
                 self.is_picamera = False
 
