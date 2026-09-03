@@ -83,12 +83,21 @@ class CameraWorker:
         self.annotated_frame = self.base_synthetic.copy()
 
     def _load_synthetic_base(self):
+        """Loads sample image as base, or creates a clear 'waiting for camera' placeholder."""
         if os.path.exists(SAMPLE_IMG_PATH):
             img = cv2.imread(SAMPLE_IMG_PATH)
             if img is not None:
                 return img
+        # Create a clean dark placeholder that clearly indicates camera is not yet connected
         img = np.zeros((720, 1280, 3), dtype=np.uint8)
-        cv2.putText(img, "RASPBERRY PI CAMERA FEED", (360, 360), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+        img[:] = (20, 22, 28)  # Dark navy background
+        # Centered warning text
+        cv2.putText(img, "IMX477 IR-Cut Camera", (390, 300),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (60, 180, 255), 2, cv2.LINE_AA)
+        cv2.putText(img, "Connecting...", (490, 360),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (100, 220, 100), 2, cv2.LINE_AA)
+        cv2.putText(img, "Waiting for Picamera2 / Raspberry Pi hardware", (270, 420),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (160, 160, 160), 1, cv2.LINE_AA)
         return img
 
     def start(self):
@@ -102,56 +111,101 @@ class CameraWorker:
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=1.0)
 
-    def _generate_synthetic_frame(self) -> np.ndarray:
+    def _generate_synthetic_frame(self, cam_status: str = "Connecting...") -> np.ndarray:
+        """Generates a placeholder frame when the real camera is unavailable."""
         frame = self.base_synthetic.copy()
-        now_str = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
-        cv2.putText(frame, f"Raspberry Pi Cam  {now_str}", (25, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (240, 240, 240), 2, cv2.LINE_AA)
-        noise = np.random.randint(-2, 3, frame.shape, dtype=np.int16)
-        frame_noisy = np.clip(frame.astype(np.int16) + noise, 0, 255).astype(np.uint8)
-        return frame_noisy
+        now_str = datetime.now().strftime("%d-%m-%Y  %H:%M:%S")
+        # Timestamp overlay
+        cv2.putText(frame, now_str, (20, 38),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.75, (200, 200, 200), 1, cv2.LINE_AA)
+        # Camera status
+        status_color = (60, 220, 60) if "Online" in cam_status else (60, 140, 255)
+        cv2.putText(frame, cam_status, (20, 695),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, status_color, 1, cv2.LINE_AA)
+        return frame
 
     def _worker_loop(self):
+        """
+        Main camera capture loop.
+        - Tries to open the IMX477 camera via Picamera2 (get_unified_camera).
+        - If camera is not available, retries every 10 seconds.
+        - Falls back to a 'waiting' placeholder frame while retrying.
+        - Once camera is open, reads frames continuously at ~30 fps.
+        """
         from src.capture import get_unified_camera
-        cam = get_unified_camera(0, width=1280, height=720)
-        
-        if cam and cam.isOpened():
-            self.status = "Online (Raspberry Pi Camera)"
-        else:
-            self.status = "Online (Simulated Test Feed)"
+
+        cam = None
+        last_cam_retry = 0.0
+        CAM_RETRY_INTERVAL = 10.0  # retry camera connection every 10 s
 
         while self.running:
+            now = time.time()
+
+            # ── Try (re)opening the camera ─────────────────────────────────
+            if cam is None or not cam.isOpened():
+                if now - last_cam_retry >= CAM_RETRY_INTERVAL:
+                    last_cam_retry = now
+                    print("[CameraWorker] Attempting to connect to IMX477 IR-Cut camera...", flush=True)
+                    try:
+                        cam = get_unified_camera(0, width=1280, height=720)
+                        if cam.isOpened():
+                            self.status = "Online (IMX477 IR-Cut Camera)"
+                            print("[CameraWorker] ✓ IMX477 camera connected and streaming.", flush=True)
+                        else:
+                            self.status = "Waiting — IMX477 camera not detected"
+                            print("[CameraWorker] ✗ Camera not available. Retrying in 10 s...", flush=True)
+                            cam = None
+                    except Exception as e_cam:
+                        self.status = f"Error: {e_cam}"
+                        cam = None
+
+            # ── Read live frame ────────────────────────────────────────────
             raw_frame = None
-            if cam and cam.isOpened():
+            if cam is not None and cam.isOpened():
                 try:
                     ret, frame = cam.read()
                     if ret and frame is not None and frame.size > 0:
                         raw_frame = frame
-                        self.status = "Online (Raspberry Pi Camera)"
-                except Exception:
-                    pass
+                        self.status = "Online (IMX477 IR-Cut Camera)"
+                    else:
+                        # Frame read failed — trigger retry on next cycle
+                        print("[CameraWorker] Frame read failed — will retry camera.", flush=True)
+                        self.status = "Reconnecting..."
+                        cam = None
+                except Exception as e_read:
+                    print(f"[CameraWorker] Frame read exception: {e_read}", flush=True)
+                    self.status = "Reconnecting..."
+                    cam = None
 
+            # ── Fallback placeholder when camera unavailable ───────────────
             if raw_frame is None:
-                raw_frame = self._generate_synthetic_frame()
+                raw_frame = self._generate_synthetic_frame(self.status)
 
+            # ── Annotate frame with status bar ────────────────────────────
             annotated = raw_frame.copy()
             h, w = annotated.shape[:2]
-            cv2.rectangle(annotated, (0, h - 25), (w, h), (15, 18, 24), -1)
-            cv2.putText(annotated, f"Raspberry Pi IMX477 Camera Feed [{self.device_id}]", (w // 2 - 160, h - 7),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+            cv2.rectangle(annotated, (0, h - 28), (w, h), (12, 15, 20), -1)
+            status_color = (60, 220, 60) if "Online" in self.status else (60, 140, 255)
+            cv2.putText(
+                annotated,
+                f"IMX477 IR-Cut [{self.device_id}]  |  {self.status}",
+                (12, h - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.48, status_color, 1, cv2.LINE_AA,
+            )
 
             with self.lock:
                 self.current_frame = raw_frame
                 self.annotated_frame = annotated
 
-            # Non-blocking background OCR extraction
-            now = time.time()
-            if not self.ocr_busy and (now - self.last_extraction_time >= self.extraction_interval):
-                self.last_extraction_time = now
+            # ── Non-blocking background OCR extraction ────────────────────
+            now2 = time.time()
+            if not self.ocr_busy and (now2 - self.last_extraction_time >= self.extraction_interval):
+                self.last_extraction_time = now2
                 self.ocr_busy = True
                 ocr_frame = raw_frame.copy()
                 threading.Thread(target=self._async_ocr_task, args=(ocr_frame,), daemon=True).start()
 
-            time.sleep(0.033)
+            time.sleep(0.033)  # ~30 fps loop
 
     def _async_ocr_task(self, frame: np.ndarray):
         try:
