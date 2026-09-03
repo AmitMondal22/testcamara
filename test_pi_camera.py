@@ -59,7 +59,8 @@ else:
 
         frame_rgb = picam2.capture_array()
         if frame_rgb is not None and frame_rgb.size > 0:
-            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+            import numpy as np
+            frame_bgr = cv2.cvtColor(np.ascontiguousarray(frame_rgb.copy()), cv2.COLOR_RGB2BGR)
             save_path = os.path.join(OUTPUT_DIR, "test_picamera2_capture.png")
             cv2.imwrite(save_path, frame_bgr)
             h, w = frame_bgr.shape[:2]

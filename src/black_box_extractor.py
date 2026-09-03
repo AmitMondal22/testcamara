@@ -17,6 +17,21 @@ Fresenius 4008S screen layout:
     UF Volume, UF Time Left, UF Rate, UF Goal, Eff. Blood Flow, Cum. Blood Vol.
 """
 
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+try:
+    # pyrefly: ignore [missing-import]
+    import torch
+    torch.set_num_threads(1)
+    torch.multiprocessing.set_sharing_strategy('file_system')
+except Exception:
+    pass
+
 import cv2
 import numpy as np
 import re
@@ -227,15 +242,22 @@ def _ocr_box_value(frame: np.ndarray, x: int, y: int, w: int, h: int) -> str:
     # Add 15px white border padding to prevent character clipping at boundaries
     thresh = cv2.copyMakeBorder(thresh, 15, 15, 15, 15, cv2.BORDER_CONSTANT, value=255)
 
+    # Convert to contiguous RGB image to avoid PyTorch tensor alignment SIGBUS
+    thresh_rgb = cv2.cvtColor(thresh, cv2.COLOR_GRAY2RGB)
+    thresh_rgb = np.ascontiguousarray(thresh_rgb)
+
     reader = _get_reader()
     if reader is None:
         return ""
 
     try:
-        # Primary: digits + punctuation allowlist
-        results = reader.readtext(thresh, detail=1, allowlist="0123456789.,:-")
-        if not results:
-            results = reader.readtext(thresh, detail=1)
+        results = None
+        with _READER_LOCK:
+            # Primary: digits + punctuation allowlist
+            results = reader.readtext(thresh_rgb, detail=1, allowlist="0123456789.,:-")
+            if not results:
+                results = reader.readtext(thresh_rgb, detail=1)
+
         if not results:
             return ""
 
