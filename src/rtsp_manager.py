@@ -481,10 +481,12 @@ class RTSPStreamManager:
         if os.path.exists(DEVICES_FILE):
             try:
                 with open(DEVICES_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    data = json.load(f)
+                    if isinstance(data, list) and len(data) > 0:
+                        return data
             except Exception:
                 pass
-        return DEFAULT_DEVICES
+        return list(DEFAULT_DEVICES)
 
     def _save_devices_config(self):
         try:
