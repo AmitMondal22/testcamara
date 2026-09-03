@@ -1,9 +1,7 @@
 [
   {
-    "id": "009",
-    "name": "Raspberry Pi IMX477 IR Camera",
-    "ip": "127.0.0.1",
-    "rtsp_url": "0",
+    "id": "pi_cam_0",
+    "name": "Raspberry Pi IMX477 Camera",
     "mode": "dialysis",
     "extraction_interval": 1.5,
     "show_boxes": true

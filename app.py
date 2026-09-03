@@ -1,7 +1,7 @@
 """
 app.py
 ------
-FastAPI Web Application Server for RTSP Multi-Camera Surveillance & Live Data Extraction.
+FastAPI Web Application Server for Raspberry Pi Camera Live Feed & Data Extraction.
 Serves Jinja2 templates, MJPEG stream endpoints, and REST API.
 """
 
@@ -10,29 +10,24 @@ os.environ["OPENCV_LOG_LEVEL"] = "OFF"
 os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
 import asyncio
 import json
-# pyrefly: ignore [missing-import]
+
 from fastapi import FastAPI, Request, HTTPException, Response
-# pyrefly: ignore [missing-import]
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
-# pyrefly: ignore [missing-import]
 from fastapi.staticfiles import StaticFiles
-# pyrefly: ignore [missing-import]
 from fastapi.templating import Jinja2Templates
-# pyrefly: ignore [missing-import]
 from pydantic import BaseModel
 
 from typing import Optional, List
 
 from src.rtsp_manager import rtsp_manager
-from src.capture import discover_camera_details
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 app = FastAPI(
-    title="Vision Scraper - RTSP Multi-Camera Image Data Extraction",
-    description="FastAPI Web UI with Jinja2, RTSP stream management, camera discovery, and real-time screen OCR extraction.",
+    title="Vision Scraper - Raspberry Pi Camera Image Data Extraction",
+    description="FastAPI Web UI with Jinja2, Raspberry Pi Camera stream management (Picamera2), and real-time screen OCR extraction.",
     version="1.0.0"
 )
 
@@ -42,13 +37,10 @@ app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 
-
 # Pydantic Request Models
 class DeviceConfigModel(BaseModel):
     id: str
     name: str
-    ip: Optional[str] = "127.0.0.1"
-    rtsp_url: str
     mode: Optional[str] = "dialysis"
     extraction_interval: Optional[float] = 1.5
     show_boxes: Optional[bool] = True
@@ -60,7 +52,7 @@ class DeviceConfigModel(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def get_dashboard(request: Request):
-    """Renders the main Jinja2 Surveillance & Data Extraction Control Center."""
+    """Renders the main Jinja2 Control Center."""
     devices = rtsp_manager.get_all_devices()
     active_device = devices[0] if devices else None
     return templates.TemplateResponse(
@@ -74,7 +66,7 @@ async def get_dashboard(request: Request):
 
 
 # ============================================================================
-# RTSP MJPEG LIVE STREAMING ENDPOINTS
+# MJPEG LIVE STREAMING ENDPOINTS
 # ============================================================================
 
 async def generate_mjpeg_frames(device_id: str):
@@ -87,10 +79,9 @@ async def generate_mjpeg_frames(device_id: str):
         await asyncio.sleep(0.033)  # Smooth 30 FPS video stream
 
 
-
 @app.get("/api/stream/{device_id}")
 async def get_mjpeg_stream(device_id: str):
-    """Returns continuous MJPEG video stream feed for target RTSP device."""
+    """Returns continuous MJPEG video stream feed for Raspberry Pi camera device."""
     return StreamingResponse(
         generate_mjpeg_frames(device_id),
         media_type="multipart/x-mixed-replace; boundary=frame"
@@ -112,13 +103,13 @@ async def get_stream_snapshot(device_id: str):
 
 @app.get("/api/devices")
 async def list_devices():
-    """Returns list of registered RTSP camera devices."""
+    """Returns list of registered camera devices."""
     return rtsp_manager.get_all_devices()
 
 
 @app.post("/api/devices")
 async def create_device(dev: DeviceConfigModel):
-    """Registers a new RTSP camera device."""
+    """Registers a camera device."""
     created = rtsp_manager.add_device(dev.dict())
     return created
 
@@ -134,7 +125,7 @@ async def get_device_info(device_id: str):
 
 @app.put("/api/devices/{device_id}")
 async def update_device(device_id: str, dev: DeviceConfigModel):
-    """Updates device settings (RTSP URL, Name, Extraction Mode)."""
+    """Updates device settings (Name, Extraction Mode, Interval)."""
     updated = rtsp_manager.update_device(device_id, dev.dict())
     if not updated:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -162,25 +153,6 @@ async def trigger_manual_extraction(device_id: str):
     """Forces instant OCR extraction burst on active camera frame."""
     data = rtsp_manager.force_extract(device_id)
     return data
-
-
-@app.post("/api/validate-rtsp")
-async def validate_rtsp_url(payload: dict):
-    """Tests RTSP stream URL connectivity."""
-    url = payload.get("rtsp_url", "")
-    return {
-        "valid": True,
-        "rtsp_url": url,
-        "latency_ms": 38,
-        "status": "Stream Accessible"
-    }
-
-
-@app.get("/api/cameras/discover")
-async def discover_hardware_cameras():
-    """Scans and discovers connected local webcam hardware (Laptop built-in & attached USB cameras)."""
-    cams = discover_camera_details(max_tested=4)
-    return {"cameras": cams, "count": len(cams)}
 
 
 @app.post("/api/devices/{device_id}/capture-and-save")
@@ -219,14 +191,10 @@ async def download_capture_file(filename: str):
     return FileResponse(path=fpath, filename=filename, media_type=media_type)
 
 
-
-# Direct script runner
 if __name__ == "__main__":
-    # pyrefly: ignore [missing-import]
     import uvicorn
     print("=" * 65)
-    print(" Starting Vision Scraper - RTSP Multi-Camera FastAPI Server...")
-    print(" Click or Open in Browser: http://127.0.0.1:8000")
-    print("                           or: http://localhost:8000")
+    print(" Starting Raspberry Pi Camera Web Server...")
+    print(" Open in Browser: http://127.0.0.1:8000")
     print("=" * 65)
     uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=False)

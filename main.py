@@ -1,26 +1,19 @@
 """
 main.py
 -------
-CLI entry point for Webcam Image Data Extractor & Terminal Scraper.
+CLI entry point for Raspberry Pi Camera Image Data Extractor & Terminal Scraper.
 
 Usage:
     python main.py                              # Interactive menu
-    python main.py --webcam                     # Webcam GUI capture -> scrape & print to terminal
-    python main.py --live                       # Live real-time webcam text scraper
-    python main.py --headless                   # Non-interactive webcam capture
-    python main.py --upload path/to/image.jpg   # Extract image data from existing file
-    python main.py --mode dialysis              # Use specialized dialysis screen parser
-
-Options:
-    --engine {auto,easyocr,tesseract}
-    --mode {general,dialysis}
-    --camera 0
+    python main.py --webcam                     # Raspberry Pi Camera GUI preview -> capture & OCR
+    python main.py --live                       # Live real-time Raspberry Pi Camera scraper
+    python main.py --headless                   # Non-interactive headless camera capture
+    python main.py --upload path/to/image.jpg   # Extract image data from file
 """
 
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 try:
-    # pyrefly: ignore [missing-import]
     import torch
 except Exception:
     pass
@@ -42,7 +35,6 @@ from src.screen_extractor import extract_fields
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
 
-# Warm up OCR engine at startup so camera capture runs instantly
 try:
     from src.ocr_extract import _get_easyocr_reader
     _get_easyocr_reader()
@@ -50,11 +42,11 @@ except Exception:
     pass
 
 
-def process_burst_images(frames: list, source_label: str = "Webcam Burst", mode: str = "dialysis", engine: str = "auto"):
+def process_burst_images(frames: list, source_label: str = "Raspberry Pi Camera", mode: str = "dialysis", engine: str = "auto"):
     """
-    Processes a burst of 3 frames captured over 1.5s:
-      1. Runs unwarping + spatial label-value extraction on each frame
-      2. Performs majority consensus voting across all frames for maximum accuracy
+    Processes a burst of frames captured from Raspberry Pi Camera:
+      1. Performs spatial OCR extraction on each frame
+      2. Performs consensus voting for maximum accuracy
       3. Prints clean results table to terminal
       4. Saves JSON results and primary PNG image to output/ folder
     """
@@ -68,10 +60,10 @@ def process_burst_images(frames: list, source_label: str = "Webcam Burst", mode:
     cv2.imwrite(image_save_path, frames[0])
 
     if mode == "dialysis":
-        print(f"\nProcessing {len(frames)}-Frame Burst with Consensus Voting on: {source_label} ...")
+        print(f"\nProcessing {len(frames)}-Frame Burst from: {source_label} ...")
         frame_results = []
         for idx, frame in enumerate(frames, 1):
-            print(f" -> Processing Frame {idx}/{len(frames)} (Perspective Unwarp & Spatial OCR)...")
+            print(f" -> Processing Frame {idx}/{len(frames)} (Spatial OCR)...")
             res = extract_fields(frame, engine=engine)
             frame_results.append(res)
 
@@ -125,29 +117,6 @@ def process_burst_images(frames: list, source_label: str = "Webcam Burst", mode:
     return saved_payload
 
 
-def choose_camera_index() -> int:
-    """Detect connected cameras and prompt user to choose camera index."""
-    try:
-        from src.capture import find_available_cameras
-        cams = find_available_cameras(max_tested=4)
-    except Exception:
-        cams = [0]
-
-    if not cams:
-        cams = [0]
-
-    print(f"\nDetecting connected cameras... Found camera index(es): {cams}")
-    default_cam = cams[-1] if len(cams) > 1 else cams[0]
-    cam_str = input(f"Enter Camera Index to use (0 = Laptop Camera, 1 = USB Webcam) [Default: {default_cam}]: ").strip()
-    if not cam_str:
-        return default_cam
-    try:
-        return int(cam_str)
-    except ValueError:
-        print(f"Invalid input. Using camera index {default_cam}.")
-        return default_cam
-
-
 def run_upload(path: str, mode: str = "dialysis", engine: str = "auto"):
     path_clean = path.strip().strip('"').strip("'")
     img = load_image(path_clean)
@@ -157,7 +126,7 @@ def run_upload(path: str, mode: str = "dialysis", engine: str = "auto"):
 def run_webcam(headless: bool = False, camera_index: int = 0, mode: str = "dialysis", engine: str = "auto"):
     from src.capture import capture_from_webcam, capture_headless
     if headless:
-        print("Capturing 3-frame burst from webcam (headless mode)...")
+        print("Capturing 3-frame burst from Raspberry Pi Camera (headless mode)...")
         frames = capture_headless(camera_index=camera_index, num_frames=3)
     else:
         frames = capture_from_webcam(camera_index=camera_index, num_frames=3)
@@ -166,7 +135,7 @@ def run_webcam(headless: bool = False, camera_index: int = 0, mode: str = "dialy
         print("No frames captured. Aborting.")
         return
 
-    process_burst_images(frames, source_label=f"Webcam (Camera #{camera_index})", mode=mode, engine=engine)
+    process_burst_images(frames, source_label=f"Raspberry Pi Camera #{camera_index}", mode=mode, engine=engine)
 
 
 def run_live(camera_index: int = 0, mode: str = "dialysis", engine: str = "auto"):
@@ -174,45 +143,34 @@ def run_live(camera_index: int = 0, mode: str = "dialysis", engine: str = "auto"
 
     def live_callback(frame_or_frames):
         frames = frame_or_frames if isinstance(frame_or_frames, list) else [frame_or_frames]
-        process_burst_images(frames, source_label=f"Live Webcam #{camera_index}", mode=mode, engine=engine)
+        process_burst_images(frames, source_label=f"Live Raspberry Pi Camera #{camera_index}", mode=mode, engine=engine)
 
     capture_live_stream(camera_index=camera_index, process_fn=live_callback, frame_interval=1.0)
 
 
 def interactive_menu():
     print("=" * 55)
-    print(" WEBCAM IMAGE DATA EXTRACTOR & TERMINAL SCRAPER ")
+    print(" RASPBERRY PI CAMERA IMAGE DATA EXTRACTOR ")
     print("=" * 55)
-    print("1) Capture from Webcam (GUI preview window - Dialysis Mode)")
-    print("2) Live Webcam Stream Scraping (Continuous real-time OCR)")
-    print("3) Capture from Webcam (Headless mode)")
+    print("1) Capture from Raspberry Pi Camera (GUI preview - Dialysis Mode)")
+    print("2) Live Raspberry Pi Camera OCR Stream (Continuous real-time)")
+    print("3) Capture from Raspberry Pi Camera (Headless mode)")
     print("4) Upload an Image file")
-    print("5) Dialysis Screen Mode (Specialized Medical Display)")
     print("Q) Quit")
     print("-" * 55)
 
-    choice = input("Choose an option [1-5 / Q]: ").strip().lower()
+    choice = input("Choose an option [1-4 / Q]: ").strip().lower()
 
     if choice == "1":
-        cam_idx = choose_camera_index()
-        run_webcam(headless=False, camera_index=cam_idx, mode="dialysis")
+        run_webcam(headless=False, camera_index=0, mode="dialysis")
     elif choice == "2":
-        cam_idx = choose_camera_index()
-        run_live(camera_index=cam_idx, mode="dialysis")
+        run_live(camera_index=0, mode="dialysis")
     elif choice == "3":
-        cam_idx = choose_camera_index()
-        run_webcam(headless=True, camera_index=cam_idx, mode="dialysis")
+        run_webcam(headless=True, camera_index=0, mode="dialysis")
     elif choice == "4":
         path = input("Enter path to image file: ").strip().strip('"').strip("'")
         if path:
             run_upload(path, mode="dialysis")
-    elif choice == "5":
-        path = input("Enter image path (or press Enter for webcam capture): ").strip().strip('"').strip("'")
-        if path:
-            run_upload(path, mode="dialysis")
-        else:
-            cam_idx = choose_camera_index()
-            run_webcam(mode="dialysis", camera_index=cam_idx)
     elif choice in ("q", "quit", "exit"):
         print("Exiting.")
         sys.exit(0)
@@ -221,12 +179,12 @@ def interactive_menu():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Webcam Image Data Extractor & Terminal Scraper")
+    parser = argparse.ArgumentParser(description="Raspberry Pi Camera Image Data Extractor & Terminal Scraper")
     parser.add_argument("-u", "--upload", help="Path to an image file to process")
-    parser.add_argument("-w", "--webcam", action="store_true", help="Capture frame interactively from webcam GUI")
-    parser.add_argument("-H", "--headless", action="store_true", help="Capture webcam frame headlessly")
-    parser.add_argument("-L", "--live", action="store_true", help="Run live webcam text scraper stream")
-    parser.add_argument("-c", "--camera", type=int, default=0, help="Webcam camera index (default: 0)")
+    parser.add_argument("-w", "--webcam", action="store_true", help="Capture frame interactively from Raspberry Pi Camera preview")
+    parser.add_argument("-H", "--headless", action="store_true", help="Capture camera frame headlessly")
+    parser.add_argument("-L", "--live", action="store_true", help="Run live camera text scraper stream")
+    parser.add_argument("-c", "--camera", type=int, default=0, help="Camera index (default: 0)")
     parser.add_argument("-m", "--mode", choices=["general", "dialysis"], default="dialysis", help="Extraction mode (default: dialysis)")
     parser.add_argument("-e", "--engine", choices=["auto", "easyocr", "tesseract"], default="auto", help="OCR Engine")
 

@@ -43,15 +43,15 @@ else:
         except Exception:
             picam2 = Picamera2()
         
-        # Configure headlessly using create_video_configuration
+        # Configure using create_preview_configuration (1280x720 RGB888)
         try:
-            config = picam2.create_video_configuration(main={"size": (1280, 720), "format": "RGB888"})
-            picam2.configure(config)
-            print(" -> Configured with video_configuration (1280x720 RGB888).")
-        except Exception as e_cfg:
             config = picam2.create_preview_configuration(main={"size": (1280, 720), "format": "RGB888"})
             picam2.configure(config)
-            print(" -> Configured with preview_configuration.")
+            print(" -> Configured with preview_configuration (1280x720 RGB888).")
+        except Exception as e_cfg:
+            config = picam2.create_video_configuration(main={"size": (1280, 720), "format": "RGB888"})
+            picam2.configure(config)
+            print(" -> Configured with video_configuration.")
 
         picam2.start()
         print(" -> Picamera2 STARTED successfully! Warming up sensor...")
