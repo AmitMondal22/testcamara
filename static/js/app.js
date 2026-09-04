@@ -421,9 +421,9 @@ function openAddDeviceModal() {
     document.getElementById("form-id-input").value = "";
     document.getElementById("form-id-input").disabled = false;
     document.getElementById("form-name-input").value = "";
-    document.getElementById("form-rtsp-input").value = "rtsp://192.168.29.211:8554/live";
+    document.getElementById("form-rtsp-input").value = "rtsp://192.168.1.17:8554/live";
     document.getElementById("form-id-input").value = "rtsp_cam_211";
-    document.getElementById("form-name-input").value = "Dialysis Machine RTSP (192.168.29.211)";
+    document.getElementById("form-name-input").value = "Dialysis Machine RTSP (192.168.1.17)";
     document.getElementById("device-modal").style.display = "flex";
 }
 
@@ -433,9 +433,9 @@ function setFormRtspPreset(url) {
 
     const idInput = document.getElementById("form-id-input");
     const nameInput = document.getElementById("form-name-input");
-    if (url.includes("192.168.29.211") || url.startsWith("rtsp://")) {
+    if (url.includes("192.168.1.17") || url.startsWith("rtsp://")) {
         if (idInput) idInput.value = "rtsp_cam_211";
-        if (nameInput) nameInput.value = "Dialysis Machine RTSP (192.168.29.211)";
+        if (nameInput) nameInput.value = "Dialysis Machine RTSP (192.168.1.17)";
     } else if (url === "0") {
         if (idInput) idInput.value = "pi_camera_0";
         if (nameInput) nameInput.value = "Raspberry Pi Attached Camera";

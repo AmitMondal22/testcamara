@@ -36,10 +36,10 @@ SAMPLE_IMG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dial
 DEFAULT_DEVICES = [
     {
         "id": "rtsp_cam_211",
-        "name": "Dialysis Machine RTSP (192.168.29.211)",
-        "ip": "192.168.29.211",
-        "camera_source": "rtsp://192.168.29.211:8554/live",
-        "rtsp_url": "rtsp://192.168.29.211:8554/live",
+        "name": "Dialysis Machine RTSP (192.168.1.17)",
+        "ip": "192.168.1.17",
+        "camera_source": "rtsp://192.168.1.17:8554/live",
+        "rtsp_url": "rtsp://192.168.1.17:8554/live",
         "mode": "dialysis",
         "status": "Online",
         "fps": 30,
