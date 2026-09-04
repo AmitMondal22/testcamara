@@ -575,6 +575,21 @@ body.dark-theme {
     color: var(--accent-green);
 }
 
+.status-pill.reconnecting {
+    color: var(--accent-amber);
+    animation: pulse-amber 1.5s infinite;
+}
+
+.status-pill.offline {
+    color: var(--accent-red);
+}
+
+@keyframes pulse-amber {
+    0% { opacity: 0.6; }
+    50% { opacity: 1.0; }
+    100% { opacity: 0.6; }
+}
+
 .info-name {
     color: var(--text-secondary);
     font-size: 12px;

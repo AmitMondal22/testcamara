@@ -6,8 +6,10 @@ Serves Jinja2 templates, MJPEG stream endpoints, and REST API.
 """
 
 import os
-os.environ["OPENCV_LOG_LEVEL"] = "OFF"
+os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
+os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
 os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|max_delay;500000|stimeout;2000000"
 import asyncio
 import json
 # pyrefly: ignore [missing-import]
@@ -31,8 +33,8 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 app = FastAPI(
-    title="Vision Scraper - Raspberry Pi Camera Live Data Extraction",
-    description="FastAPI Web UI for Raspberry Pi onboard camera streaming and real-time screen OCR extraction.",
+    title="Vision Scraper - Dialysis Monitor Live Telemetry & OCR Extraction",
+    description="FastAPI Web UI for Dialysis machine streaming and real-time screen OCR extraction.",
     version="1.0.0"
 )
 

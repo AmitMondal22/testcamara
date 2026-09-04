@@ -21,6 +21,7 @@ class UnifiedCameraCapture:
     """
     Unified camera wrapper that automatically tries Picamera2 (Raspberry Pi IMX477 IR Camera)
     and seamlessly falls back to OpenCV VideoCapture (Windows / USB Webcams / GStreamer).
+    Includes auto-reconnection logic and error counters for hot-plugged / disconnected cameras.
     """
 
     def __init__(self, camera_index: int = 0, width: int = 1280, height: int = 720):
@@ -30,6 +31,7 @@ class UnifiedCameraCapture:
         self.picam2 = None
         self.cap = None
         self.is_picamera = False
+        self._error_count = 0
 
         # 1. Try Picamera2 (Primary hardware stack for Raspberry Pi 4 + IMX477 Camera)
         if not sys.platform.startswith("win"):
@@ -71,50 +73,39 @@ class UnifiedCameraCapture:
                 self.picam2 = None
                 self.is_picamera = False
 
-        # 2. Fallback to OpenCV VideoCapture (V4L2 / GStreamer / Direct probing)
+        # 2. Fallback to OpenCV VideoCapture (V4L2 / DirectShow / GStreamer / Direct probing)
         if not self.is_picamera:
             candidate_indices = [camera_index] + [i for i in [0, 1, 2, 3] if i != camera_index]
+            backend = _get_backend()
             for idx in candidate_indices:
-                # Try direct V4L2 on Linux
-                if sys.platform.startswith("linux"):
-                    try:
-                        self.cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
-                        if self.cap and self.cap.isOpened():
-                            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-                            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-                            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-                            ret, test_f = self.cap.read()
-                            if ret and test_f is not None and test_f.size > 0:
-                                print(f"[Camera] Active Raspberry Pi Camera found on /dev/video{idx} via V4L2", flush=True)
-                                self.camera_index = idx
-                                break
-                            else:
-                                self.cap.release()
-                                self.cap = None
-                    except Exception:
-                        self.cap = None
+                try:
+                    if sys.platform.startswith("linux"):
+                        cap_test = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+                    elif backend != cv2.CAP_ANY:
+                        cap_test = cv2.VideoCapture(idx, backend)
+                    else:
+                        cap_test = cv2.VideoCapture(idx)
 
-                # Try generic backend
-                if self.cap is None or not self.cap.isOpened():
-                    backend = _get_backend()
-                    try:
-                        self.cap = cv2.VideoCapture(idx, backend) if backend != cv2.CAP_ANY else cv2.VideoCapture(idx)
-                        if self.cap and self.cap.isOpened():
-                            ret, test_f = self.cap.read()
-                            if ret and test_f is not None and test_f.size > 0:
-                                print(f"[Camera] Active Camera found on Device #{idx}", flush=True)
-                                self.camera_index = idx
-                                break
-                            else:
-                                self.cap.release()
-                                self.cap = None
-                    except Exception:
-                        self.cap = None
+                    if cap_test and cap_test.isOpened():
+                        if sys.platform.startswith("linux"):
+                            cap_test.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+                        cap_test.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                        cap_test.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                        ret, test_f = cap_test.read()
+                        if ret and test_f is not None and test_f.size > 0:
+                            self.cap = cap_test
+                            self.camera_index = idx
+                            print(f"[Camera] Active Camera found on Device #{idx}", flush=True)
+                            break
+                        else:
+                            cap_test.release()
+                except Exception:
+                    pass
 
             if self.cap and self.cap.isOpened():
                 print(f"[Camera] Initialized via OpenCV VideoCapture (#{self.camera_index})", flush=True)
             else:
-                print(f"[Camera Warning] No active video stream detected on Raspberry Pi camera indices {candidate_indices}", flush=True)
+                print(f"[Camera Warning] No active video stream detected on camera index {camera_index}. Waiting for connection...", flush=True)
 
     def isOpened(self) -> bool:
         if self.is_picamera:
@@ -122,29 +113,40 @@ class UnifiedCameraCapture:
         return self.cap is not None and self.cap.isOpened()
 
     def read(self):
-        """Returns tuple (ret: bool, frame: np.ndarray in BGR format)."""
+        """Returns tuple (ret: bool, frame: np.ndarray in BGR format). Auto-releases on consecutive errors."""
         if self.is_picamera and self.picam2 is not None:
             try:
                 frame_rgb = self.picam2.capture_array()
                 if frame_rgb is not None and frame_rgb.size > 0:
                     self._error_count = 0
-                    # Make explicit heap copy to avoid DMA buffer recycling SIGBUS
                     frame_bgr = cv2.cvtColor(np.ascontiguousarray(frame_rgb.copy()), cv2.COLOR_RGB2BGR)
                     return True, frame_bgr
             except Exception as e:
-                self._error_count = getattr(self, "_error_count", 0) + 1
-                if self._error_count > 15:
-                    print(f"[Camera Error] Picamera2 stream timed out ({e}). Releasing for auto-reconnect...", flush=True)
+                self._error_count += 1
+                if self._error_count > 10:
+                    print(f"[Camera Error] Picamera2 stream lost ({e}). Releasing for auto-reconnect...", flush=True)
                     self.release()
                 return False, None
         elif self.cap is not None and self.cap.isOpened():
-            ret, frame = self.cap.read()
-            if ret and frame is not None:
-                return True, np.ascontiguousarray(frame.copy())
-            return ret, frame
+            try:
+                ret, frame = self.cap.read()
+                if ret and frame is not None and frame.size > 0:
+                    self._error_count = 0
+                    return True, np.ascontiguousarray(frame.copy())
+                else:
+                    self._error_count += 1
+                    if self._error_count > 10:
+                        print(f"[Camera Error] Camera #{self.camera_index} disconnected / no frames. Releasing for auto-reconnect...", flush=True)
+                        self.release()
+                    return False, None
+            except Exception as e:
+                print(f"[Camera Error] VideoCapture exception ({e}). Releasing for auto-reconnect...", flush=True)
+                self.release()
+                return False, None
         return False, None
 
     def release(self):
+        global _CAMERA_SINGLETONS
         if self.is_picamera and self.picam2 is not None:
             try:
                 self.picam2.stop()
@@ -161,15 +163,28 @@ class UnifiedCameraCapture:
                 pass
             self.cap = None
 
+        with _CAMERA_LOCK:
+            if self.camera_index in _CAMERA_SINGLETONS and _CAMERA_SINGLETONS[self.camera_index] is self:
+                del _CAMERA_SINGLETONS[self.camera_index]
 
-def get_unified_camera(camera_index: int = 0, width: int = 1280, height: int = 720) -> UnifiedCameraCapture:
+
+def get_unified_camera(camera_index: int = 0, width: int = 1280, height: int = 720, force_new: bool = False) -> UnifiedCameraCapture:
     """Thread-safe singleton getter to prevent multiple Picamera2 instances from locking camera hardware on Raspberry Pi."""
     global _CAMERA_SINGLETONS
     with _CAMERA_LOCK:
         cam = _CAMERA_SINGLETONS.get(camera_index)
-        if cam is None or not cam.isOpened():
+        if force_new or cam is None or not cam.isOpened():
+            if cam is not None and force_new:
+                try:
+                    cam.release()
+                except Exception:
+                    pass
             cam = UnifiedCameraCapture(camera_index, width, height)
-            _CAMERA_SINGLETONS[camera_index] = cam
+            if cam.isOpened():
+                _CAMERA_SINGLETONS[camera_index] = cam
+            else:
+                if camera_index in _CAMERA_SINGLETONS:
+                    del _CAMERA_SINGLETONS[camera_index]
         return cam
 
 
@@ -320,26 +335,48 @@ def capture_live_stream(camera_index: int = 0, process_fn=None, frame_interval: 
     """
     Continuous live camera scraping mode using UnifiedCameraCapture.
     Runs OCR on camera frames every `frame_interval` seconds and calls `process_fn(frame)`.
+    Automatically reconnects when the camera is disconnected or unplugged.
     Press 'q' in the window to stop live streaming.
     """
-    cam = UnifiedCameraCapture(camera_index, width=1280, height=720)
-    if not cam.isOpened():
-        raise RuntimeError(f"Could not open camera at index {camera_index}")
+    cam = get_unified_camera(camera_index, width=1280, height=720, force_new=True)
 
     window_name = "Live Camera Data Extractor - [Q] Stop Stream"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, 800, 600)
 
-    print("\nStarting Live Camera OCR Stream...")
+    print("\nStarting Live Camera OCR Stream (with Auto-Reconnect)...")
     print("Press 'q' or ESC in the preview window to exit live mode.\n")
 
     last_process_time = 0.0
+    last_reconnect_time = 0.0
 
     try:
         while True:
-            ret, frame = cam.read()
-            if not ret or frame is None:
-                time.sleep(0.05)
+            frame = None
+            if cam is not None and cam.isOpened():
+                ret, frame = cam.read()
+                if not ret or frame is None:
+                    frame = None
+
+            # Reconnection attempt if camera is disconnected
+            if frame is None:
+                now_rec = time.time()
+                if now_rec - last_reconnect_time >= 1.5:
+                    last_reconnect_time = now_rec
+                    cam = get_unified_camera(camera_index, width=1280, height=720, force_new=True)
+
+                # Show standby reconnecting frame in preview window
+                standby = np.zeros((600, 800, 3), dtype=np.uint8)
+                standby[:] = (25, 28, 36)
+                dots = "." * (int(time.time() * 2) % 4)
+                cv2.putText(standby, f"CAMERA DISCONNECTED - RECONNECTING{dots}", (80, 280),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2, cv2.LINE_AA)
+                cv2.putText(standby, f"Waiting for Camera #{camera_index}...", (240, 330),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1, cv2.LINE_AA)
+                cv2.imshow(window_name, standby)
+                key = cv2.waitKey(40) & 0xFF
+                if key in (ord('q'), ord('Q'), 27):
+                    break
                 continue
 
             current_time = time.time()
@@ -367,5 +404,6 @@ def capture_live_stream(camera_index: int = 0, process_fn=None, frame_interval: 
                 print("Live camera stream stopped.")
                 break
     finally:
-        cam.release()
+        if cam is not None:
+            cam.release()
         cv2.destroyAllWindows()

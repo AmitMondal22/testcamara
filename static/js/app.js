@@ -165,9 +165,17 @@ function selectDevice(deviceId) {
     renderStreamDropdown();
     updateActiveDeviceUI();
 
-    // Update Stream Image Source
+    // Update Stream Image Source with auto-retry on stream glitch
     const imgEl = document.getElementById("rtsp-live-stream-img");
     if (imgEl) {
+        imgEl.onerror = () => {
+            console.warn("[Stream] Video stream interrupted. Retrying in 1.5s...");
+            setTimeout(() => {
+                if (activeDeviceId === deviceId) {
+                    imgEl.src = `/api/stream/${deviceId}?t=${Date.now()}`;
+                }
+            }, 1500);
+        };
         imgEl.src = `/api/stream/${deviceId}?t=${Date.now()}`;
     }
 
@@ -189,9 +197,29 @@ function updateActiveDeviceUI() {
 
     const statusPill = document.getElementById("info-device-status");
     if (statusPill) {
-        const isOnline = (dev.status || '').toLowerCase().includes('online');
-        statusPill.textContent = isOnline ? "o Online" : "o Offline";
-        statusPill.className = `status-pill ${isOnline ? 'online' : 'offline'}`;
+        const st = (dev.status || '').toLowerCase();
+        if (st.includes('online')) {
+            statusPill.textContent = "● Online";
+            statusPill.className = "status-pill online";
+        } else if (st.includes('reconnect') || st.includes('connecting')) {
+            statusPill.textContent = "◐ Reconnecting...";
+            statusPill.className = "status-pill reconnecting";
+        } else {
+            statusPill.textContent = "○ Offline";
+            statusPill.className = "status-pill offline";
+        }
+    }
+
+    const sysStatus = document.getElementById("global-system-status");
+    if (sysStatus) {
+        const st = (dev.status || '').toLowerCase();
+        if (st.includes('online')) {
+            sysStatus.textContent = "SYSTEM ONLINE";
+        } else if (st.includes('reconnect') || st.includes('connecting')) {
+            sysStatus.textContent = "AUTO-RECONNECTING CAMERA";
+        } else {
+            sysStatus.textContent = "SYSTEM STANDBY";
+        }
     }
 }
 
@@ -202,6 +230,13 @@ async function pollDeviceData() {
         if (res.ok) {
             const data = await res.json();
             updateExtractedDataDisplay(data);
+
+            // Sync status pill with live worker status
+            const dev = devices.find(d => d.id === activeDeviceId);
+            if (dev && data.status && dev.status !== data.status) {
+                dev.status = data.status;
+                updateActiveDeviceUI();
+            }
         }
     } catch (err) {
         console.error("Data polling error:", err);
@@ -376,14 +411,35 @@ function refreshDevice() {
     pollDeviceData();
 }
 
+function openAddModal() {
+    openAddDeviceModal();
+}
+
 function openAddDeviceModal() {
-    document.getElementById("modal-title").textContent = "Add Camera Device";
+    document.getElementById("modal-title").textContent = "Connect Camera / RTSP Stream";
     document.getElementById("form-device-id").value = "";
     document.getElementById("form-id-input").value = "";
     document.getElementById("form-id-input").disabled = false;
     document.getElementById("form-name-input").value = "";
-    document.getElementById("form-rtsp-input").value = "0";
+    document.getElementById("form-rtsp-input").value = "rtsp://192.168.29.211:8554/live";
+    document.getElementById("form-id-input").value = "rtsp_cam_211";
+    document.getElementById("form-name-input").value = "Dialysis Machine RTSP (192.168.29.211)";
     document.getElementById("device-modal").style.display = "flex";
+}
+
+function setFormRtspPreset(url) {
+    const input = document.getElementById("form-rtsp-input");
+    if (input) input.value = url;
+
+    const idInput = document.getElementById("form-id-input");
+    const nameInput = document.getElementById("form-name-input");
+    if (url.includes("192.168.29.211") || url.startsWith("rtsp://")) {
+        if (idInput) idInput.value = "rtsp_cam_211";
+        if (nameInput) nameInput.value = "Dialysis Machine RTSP (192.168.29.211)";
+    } else if (url === "0") {
+        if (idInput) idInput.value = "pi_camera_0";
+        if (nameInput) nameInput.value = "Raspberry Pi Attached Camera";
+    }
 }
 
 function openEditModal() {

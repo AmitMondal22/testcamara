@@ -1,8 +1,10 @@
 [
   {
-    "id": "pi_camera_0",
-    "name": "Raspberry Pi Attached Camera",
-    "camera_source": "0",
+    "id": "rtsp_cam_211",
+    "name": "Dialysis Machine RTSP (192.168.29.211)",
+    "ip": "192.168.29.211",
+    "camera_source": "rtsp://192.168.29.211:8554/live",
+    "rtsp_url": "rtsp://192.168.29.211:8554/live",
     "mode": "dialysis",
     "status": "Online",
     "fps": 30,

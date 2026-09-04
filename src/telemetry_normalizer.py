@@ -18,74 +18,107 @@ _DEVICE_LAST_KNOWN: Dict[str, Dict[str, Any]] = {}
 
 def sanitize_raw_value(field_name: str, raw_val: str) -> str:
     """
-    Cleans raw OCR string formatting without altering numeric digits.
+    Sanitizes extracted OCR values to match exact Fresenius 4008S dialysis formats:
+      - UF Volume       : 4-digit integer (e.g. '2380')
+      - UF Time Left    : 'H:MM' format (e.g. '1:34')
+      - UF Rate         : 3 or 4-digit integer (e.g. '1003', '748')
+      - UF Goal         : 4-digit integer (e.g. '4000')
+      - Eff. Blood Flow : 3-digit integer (e.g. '216', '275')
+      - Cum. Blood Vol. : Decimal 'XX.X' (e.g. '33.0', '83.9')
+      - Kt/V            : Decimal '0.XX' (e.g. '0.84', '0.68')
+      - Plasma Na       : 3-digit integer '120-160' (e.g. '134')
+      - Goal in         : 'H:MM' format (e.g. '1:53')
+      - Clearance       : 3-digit integer '80-350' (e.g. '150', '184')
     """
     if not raw_val or raw_val in ("null", "None", ""):
         return ""
 
     val = str(raw_val).strip()
 
-    # Preserve status dash '--:--'
     if "--" in val or "-:-" in val:
-        return "--:--"
+        return "--"
 
-    # Remove thousand-separator commas and dots for pure integer fields
-    if field_name in ("UF Volume", "UF Rate", "UF Goal"):
-        clean_val = val.replace(",", "").replace(".", "").strip()
-        digits = "".join(ch for ch in clean_val if ch.isdigit())
-        return digits if digits else clean_val
+    # 1. UF Volume: strictly 4-digit integer (e.g. 2380, 4932)
+    if field_name == "UF Volume":
+        digits = "".join(ch for ch in val if ch.isdigit())
+        if len(digits) >= 4:
+            return digits[:4]
+        return digits if digits else val
 
-    # Range validation & cleaning for Plasma Na (120 - 160 mmol/l)
+    # 2. UF Goal: strictly 4-digit integer (e.g. 4000)
+    if field_name == "UF Goal":
+        digits = "".join(ch for ch in val if ch.isdigit())
+        if len(digits) >= 4:
+            return digits[:4]
+        return digits if digits else val
+
+    # 3. UF Rate: 3 or 4-digit integer (e.g. 1003, 748)
+    if field_name == "UF Rate":
+        digits = "".join(ch for ch in val if ch.isdigit())
+        if len(digits) > 4:
+            return digits[:4]
+        return digits if digits else val
+
+    # 4. Plasma Na: 3-digit integer (120 - 160)
     if field_name == "Plasma Na":
-        clean_val = val.replace(",", "").replace(".", "").strip()
-        digits = "".join(ch for ch in clean_val if ch.isdigit())
-        val_int = int(digits) if digits.isdigit() else 0
-        if 120 <= val_int <= 160:
-            return str(val_int)
-        return ""
+        digits = "".join(ch for ch in val if ch.isdigit())
+        if len(digits) >= 3:
+            v_int = int(digits[:3])
+            if 115 <= v_int <= 165:
+                return str(v_int)
+        return digits if digits else val
 
-    # Range validation & cleaning for Eff. Blood Flow (100 - 500 ml/min)
+    # 5. Eff. Blood Flow: 3-digit integer (100 - 450, e.g. 216, 275)
     if field_name == "Eff. Blood Flow":
-        clean_val = val.replace(",", "").replace(".", "").strip()
-        digits = "".join(ch for ch in clean_val if ch.isdigit())
-        val_int = int(digits) if digits.isdigit() else 0
-        if 100 <= val_int <= 500:
-            return str(val_int)
-        return ""
+        digits = "".join(ch for ch in val if ch.isdigit())
+        if len(digits) >= 3:
+            v_int = int(digits[:3])
+            if 100 <= v_int <= 500:
+                return str(v_int)
+        return digits if digits else val
 
-    # Range validation & cleaning for Clearance (50 - 350 ml/min)
+    # 6. Clearance: 3-digit integer (80 - 350, e.g. 150, 184)
     if field_name == "Clearance":
-        clean_val = val.replace(",", "").replace(".", "").strip()
-        digits = "".join(ch for ch in clean_val if ch.isdigit())
-        val_int = int(digits) if digits.isdigit() else 0
-        if 50 <= val_int <= 350:
-            return str(val_int)
-        return ""
+        digits = "".join(ch for ch in val if ch.isdigit())
+        if len(digits) >= 3:
+            v_int = int(digits[:3])
+            if 60 <= v_int <= 360:
+                return str(v_int)
+        return digits if digits else val
 
-    # Time fields: format '.' or missing colon to ':' e.g. 1.43 -> 1:43, 154 -> 1:54
+    # 7. Time fields: strictly 'H:MM' (e.g. '1:34', '1:53')
     if field_name in ("UF Time Left", "Goal in"):
-        clean_val = val.replace(",", "").strip()
-        m = re.search(r"(\d{1,2})[\.:](\d{2})", clean_val)
+        m = re.search(r"(\d{1,2})[\.:](\d{2})", val)
         if m:
-            return f"{m.group(1)}:{m.group(2)}"
-        digits = "".join(ch for ch in clean_val if ch.isdigit())
+            mins = int(m.group(2))
+            if mins >= 60:
+                mins = 59
+            return f"{m.group(1)}:{mins:02d}"
+        digits = "".join(ch for ch in val if ch.isdigit())
         if len(digits) in (3, 4):
-            return f"{digits[:-2]}:{digits[-2:]}"
-        return clean_val
+            h_part = digits[:-2]
+            m_part = int(digits[-2:])
+            if m_part >= 60:
+                m_part = 59
+            return f"{h_part}:{m_part:02d}"
+        return val
 
-    # Decimal fields (Kt/V: X.XX, Cum. Blood Vol.: XX.X)
+    # 8. Kt/V: strictly '0.XX' decimal (e.g. '0.84', '0.68')
     if field_name == "Kt/V":
         clean_val = val.replace(",", ".")
-        m = re.search(r"(\d{1,2}\.\d{2})", clean_val)
+        m = re.search(r"(0\.\d{2})", clean_val)
         if m:
             return m.group(1)
         digits = "".join(ch for ch in clean_val if ch.isdigit())
         if len(digits) == 2:
             return f"0.{digits}"
-        elif len(digits) == 3:
-            return f"{digits[0]}.{digits[1:]}"
+        elif len(digits) >= 3 and digits.startswith("0"):
+            return f"0.{digits[1:3]}"
+        elif len(digits) >= 2:
+            return f"0.{digits[:2]}"
         return clean_val
 
+    # 9. Cum. Blood Vol.: decimal 'XX.X' (e.g. '33.0', '83.9')
     if field_name == "Cum. Blood Vol.":
         clean_val = val.replace(",", ".")
         m = re.search(r"(\d{1,3}\.\d)", clean_val)
@@ -95,11 +128,6 @@ def sanitize_raw_value(field_name: str, raw_val: str) -> str:
         if len(digits) >= 2:
             return f"{digits[:-1]}.{digits[-1]}"
         return clean_val
-
-    # General numeric fields: extract clean digit sequence
-    m_num = re.search(r"(\d+[\.:]?\d*)", val)
-    if m_num:
-        return m_num.group(1)
 
     return val
 
